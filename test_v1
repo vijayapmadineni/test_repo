@@ -36,6 +36,67 @@ s3_folder = 'path/to/json-files'
 # Download and extract the NDC data, and get the S3 path of the JSON
 s3_json_path = download_and_extract_zip(ndc_url, bucket_name, s3_folder)
 
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, DateType
+
+# Define the schema for active ingredients
+active_ingredients_schema = StructType([
+    StructField("name", StringType(), True),
+    StructField("strength", StringType(), True),
+])
+
+# Define the schema for packaging
+packaging_schema = StructType([
+    StructField("package_ndc", StringType(), True),
+    StructField("description", StringType(), True),
+    StructField("marketing_start_date", DateType(), True),
+    StructField("marketing_end_date", DateType(), True),
+    StructField("sample", StringType(), True),
+])
+
+# Define the schema for the openfda section
+openfda_schema = StructType([
+    StructField("is_original_packager", StringType(), True),
+    StructField("manufacturer_name", ArrayType(StringType()), True),
+    StructField("nui", StringType(), True),
+    StructField("pharm_class_cs", StringType(), True),
+    StructField("pharm_class_epc", StringType(), True),
+    StructField("pharm_class_moa", StringType(), True),
+    StructField("pharm_class_pe", StringType(), True),
+    StructField("rxcui", ArrayType(StringType()), True),
+    StructField("spl_set_id", StringType(), True),
+    StructField("unii", StringType(), True),
+    StructField("upc", StringType(), True),
+])
+
+# Define the complete schema for the NDC dataset
+ndc_schema = StructType([
+    StructField("product_id", StringType(), True),
+    StructField("product_ndc", StringType(), True),
+    StructField("spl_id", StringType(), True),
+    StructField("product_type", StringType(), True),
+    StructField("finished", StringType(), True),
+    StructField("brand_name", StringType(), True),
+    StructField("brand_name_base", StringType(), True),
+    StructField("brand_name_suffix", StringType(), True),
+    StructField("generic_name", StringType(), True),
+    StructField("dosage_form", StringType(), True),
+    StructField("route", StringType(), True),
+    StructField("marketing_start_date", DateType(), True),
+    StructField("marketing_end_date", DateType(), True),
+    StructField("marketing_category", StringType(), True),
+    StructField("application_number", StringType(), True),
+    StructField("pharm_class", StringType(), True),
+    StructField("dea_schedule", StringType(), True),
+    StructField("listing_expiration_date", DateType(), True),
+    StructField("active_ingredients", ArrayType(active_ingredients_schema), True),
+    StructField("packaging", ArrayType(packaging_schema), True),
+    StructField("openfda", openfda_schema, True),
+])
+
+# Example of using this schema to read JSON data
+# df = spark.read.schema(ndc_schema).json("path_to_ndc_json_file.json")
+# df.show()
+
 # Convert to Spark DataFrame
 if s3_json_path:
     spark_df = spark.read.json(s3_json_path)
