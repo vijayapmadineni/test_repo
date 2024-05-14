@@ -1,0 +1,49 @@
+import boto3
+from botocore.exceptions import NoCredentialsError
+
+def upload_to_s3(bucket_name, s3_key, file_data):
+    try:
+        s3 = boto3.client('s3')
+        s3.upload_fileobj(file_data, bucket_name, s3_key)
+    except NoCredentialsError:
+        print("Credentials not available")
+    except Exception as e:
+        print(str(e))
+
+def download_and_extract_zip(url, bucket_name, s3_folder):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as the_zip:
+            for file_name in the_zip.namelist():
+                print(f'Extracting {file_name}')
+                # Extract file content
+                with the_zip.open(file_name) as file:
+                    s3_key = f'{s3_folder}/{file_name}'
+                    upload_to_s3(bucket_name, s3_key, file)
+                    return f's3://{bucket_name}/{s3_key}'
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred: {http_err}")
+    except Exception as err:
+        print(f"Other error occurred: {err}")
+
+
+# Define S3 parameters
+bucket_name = 'your-bucket-name'
+s3_folder = 'path/to/json-files'
+
+# Download and extract the NDC data, and get the S3 path of the JSON
+s3_json_path = download_and_extract_zip(ndc_url, bucket_name, s3_folder)
+
+# Convert to Spark DataFrame
+if s3_json_path:
+    spark_df = spark.read.json(s3_json_path)
+
+    # Show schema and data
+    spark_df.printSchema()
+    spark_df.show()
+    print('NDC data was read successfully.')
+
+# Stop Spark Context and commit job
+job.commit()
