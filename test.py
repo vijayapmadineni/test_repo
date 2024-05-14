@@ -6,6 +6,21 @@ import json
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
 
+
+import requests
+import json
+
+# Fetching the JSON data from the URL
+url = "https://api.fda.gov/download.json"
+response = requests.get(url)
+data = response.json()
+
+# Extract the NDC URL
+ndc_url = data['results']['drug']['ndc']['partitions'][0]['file']
+
+# Continue processing as needed
+print(ndc_url)
+
 # Initialize Spark Context and Spark Session
 sc = SparkContext()
 spark = SparkSession(sc)
