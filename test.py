@@ -1,23 +1,40 @@
-import os
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from pyspark.sql.types import StringType
 
-# Function to download file from S3 and upload it to SFTP
-def upload_to_sftp(s3_bucket, s3_key, local_file_path, remote_file_name, sftp_host, sftp_port, sftp_user, sftp_pass):
-    # Download file from S3 to local directory
-    s3_client.download_file(s3_bucket, s3_key, local_file_path)
+## @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
 
-    # Upload file from local directory to SFTP
-    transport = paramiko.Transport((sftp_host, sftp_port))
-    transport.connect(username=sftp_user, password=sftp_pass)
-    sftp = paramiko.SFTPClient.from_transport(transport)
-    sftp.put(local_file_path, remote_file_name)
-    sftp.close()
-    transport.close()
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
 
-# Define local directory to save the downloaded file
-local_file_path = "/tmp/dnc.csv"
+# Read JSON data from the URL
+json_df = spark.read.json("https://open.fda.gov/apis/drug/ndc/download/")
 
-# Call the function
-upload_to_sftp(s3_bucket, s3_key, local_file_path, "dnc.csv", sftp_host, sftp_port, sftp_user, sftp_pass)
+# Flatten the JSON
+json_df_flattened = json_df.select(
+    col("results").getItem(0).getItem("product_ndc").alias("product_ndc"),
+    col("results").getItem(0).getItem("product_type").alias("product_type"),
+    # add more columns as needed
+)
 
-# Remove the downloaded file from local directory
-os.remove(local_file_path)
+# Load the flattened data into PostgreSQL
+db_url = "jdbc:postgresql://your-postgres-host:5432/your-database"
+table_name = "your_table_name"
+mode = "overwrite"  # Choose overwrite or append based on your requirement
+
+json_df_flattened.write \
+    .format("jdbc") \
+    .option("url", db_url) \
+    .option("dbtable", table_name) \
+    .option("user", "your_username") \
+    .option("password", "your_password") \
+    .mode(mode) \
+    .save()
+
