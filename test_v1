@@ -1,5 +1,31 @@
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import lit, unix_timestamp
+from pyspark.sql.types import *
 import boto3
-from botocore.exceptions import NoCredentialsError
+import psycopg2
+from datetime import datetime, timedelta
+import pytz
+import logging
+import re
+import requests
+import zipfile
+import io
+import json
+
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+job_name=args['JOB_NAME']
 
 def upload_to_s3(bucket_name, s3_key, file_data):
     try:
@@ -9,6 +35,7 @@ def upload_to_s3(bucket_name, s3_key, file_data):
         print("Credentials not available")
     except Exception as e:
         print(str(e))
+        
 
 def download_and_extract_zip(url, bucket_name, s3_folder):
     try:
@@ -30,13 +57,22 @@ def download_and_extract_zip(url, bucket_name, s3_folder):
 
 
 # Define S3 parameters
-bucket_name = 'your-bucket-name'
-s3_folder = 'path/to/json-files'
+bucket_name = 'hf-dev-cdp-kitewheel'
+s3_folder = 'ndc_test/to/json-files'
+
+# Fetching the JSON data from the URL
+src_url = "https://api.fda.gov/download.json"
+response = requests.get(src_url)
+data = response.json()
+
+# Extract the NDC URL
+ndc_url = data['results']['drug']['ndc']['partitions'][0]['file']
+
+# Continue processing as needed
+print(ndc_url)
 
 # Download and extract the NDC data, and get the S3 path of the JSON
 s3_json_path = download_and_extract_zip(ndc_url, bucket_name, s3_folder)
-
-from pyspark.sql.types import StructType, StructField, StringType, ArrayType, DateType
 
 # Define the schema for active ingredients
 active_ingredients_schema = StructType([
@@ -93,13 +129,10 @@ ndc_schema = StructType([
     StructField("openfda", openfda_schema, True),
 ])
 
-# Example of using this schema to read JSON data
-# df = spark.read.schema(ndc_schema).json("path_to_ndc_json_file.json")
-# df.show()
-
 # Convert to Spark DataFrame
 if s3_json_path:
-    spark_df = spark.read.json(s3_json_path)
+    # spark_df = spark.read.schema(ndc_schema).json(s3_json_path)
+    spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
 
     # Show schema and data
     spark_df.printSchema()
