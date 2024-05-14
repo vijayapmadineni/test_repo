@@ -1,40 +1,49 @@
 import sys
-from awsglue.transforms import *
-from awsglue.utils import getResolvedOptions
+import requests
+import zipfile
+import io
+import json
 from pyspark.context import SparkContext
-from awsglue.context import GlueContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
-from pyspark.sql.types import StringType
 
-## @params: [JOB_NAME]
-args = getResolvedOptions(sys.argv, ['JOB_NAME'])
-
+# Initialize Spark Context and Spark Session
 sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
+spark = SparkSession(sc)
 
-# Read JSON data from the URL
-json_df = spark.read.json("https://open.fda.gov/apis/drug/ndc/download/")
+# URL to download the NDC directory ZIP file
+url = "https://download.open.fda.gov/drug/ndc/drug-ndc-0001-of-0001.json.zip"
 
-# Flatten the JSON
-json_df_flattened = json_df.select(
-    col("results").getItem(0).getItem("product_ndc").alias("product_ndc"),
-    col("results").getItem(0).getItem("product_type").alias("product_type"),
-    # add more columns as needed
-)
+# Function to download and extract ZIP file
+def download_and_extract_zip(url):
+    try:
+        # Download the ZIP file
+        response = requests.get(url)
+        response.raise_for_status()
 
-# Load the flattened data into PostgreSQL
-db_url = "jdbc:postgresql://your-postgres-host:5432/your-database"
-table_name = "your_table_name"
-mode = "overwrite"  # Choose overwrite or append based on your requirement
+        # Extract the ZIP file contents
+        with zipfile.ZipFile(io.BytesIO(response.content)) as the_zip:
+            # Extract all files in the ZIP
+            for file_name in the_zip.namelist():
+                with the_zip.open(file_name) as file:
+                    # Read the JSON content
+                    json_data = json.load(file)
+                    return json_data
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred: {http_err}")
+    except Exception as err:
+        print(f"Other error occurred: {err}")
 
-json_df_flattened.write \
-    .format("jdbc") \
-    .option("url", db_url) \
-    .option("dbtable", table_name) \
-    .option("user", "your_username") \
-    .option("password", "your_password") \
-    .mode(mode) \
-    .save()
+# Download and extract the NDC data
+ndc_data = download_and_extract_zip(url)
 
+# Convert to Spark DataFrame
+if ndc_data:
+    # Assuming the JSON data is a list of dictionaries
+    spark_df = spark.read.json(sc.parallelize([json.dumps(ndc_data)]))
+
+    # Show schema and data
+    spark_df.printSchema()
+    spark_df.show()
+
+# Stop Spark Context
+sc.stop()
