@@ -1,3 +1,6 @@
+I have below job, please implement above function stream_clean_json in this once file is downloaded it needs to be cleaned and upload_to_s3
+
+
 import sys
 from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
@@ -47,14 +50,49 @@ def download_and_extract_zip(url, bucket_name, s3_folder):
                 print(f'Extracting {file_name}')
                 # Extract file content
                 with the_zip.open(file_name) as file:
-                    s3_key = f'{s3_folder}/{file_name}'
-                    upload_to_s3(bucket_name, s3_key, file)
-                    return f's3://{bucket_name}/{s3_key}'
+                    cleaned_s3_key = f'{s3_folder}/cleaned_{file_name}'
+                    stream_clean_json(file, bucket_name, cleaned_s3_key)
+                    return f's3://{bucket_name}/{cleaned_s3_key}'
     except requests.exceptions.HTTPError as http_err:
         print(f"HTTP error occurred: {http_err}")
     except Exception as err:
         print(f"Other error occurred: {err}")
 
+
+import io
+import boto3
+
+def stream_clean_json(file_stream, bucket_name, s3_key):
+    # Convert byte stream to StringIO for text manipulation
+    str_io = io.StringIO(file_stream.read().decode('utf-8'))
+    output_io = io.StringIO()
+    
+    capture = False
+    buffer = []  # to handle the removal of the last line
+    for line in str_io:
+        if '"results": [' in line:
+            line = line.replace('"results": [', '[')  # Start capturing after replacing the line
+            capture = True
+        if capture:
+            buffer.append(line)
+    
+    # Remove the last line from buffer before writing to output
+    if buffer:
+        buffer.pop()  # Remove the last line
+    
+    # Write the modified content to output_io
+    for line in buffer:
+        output_io.write(line)
+    
+    # Move back to the start of the StringIO buffer
+    output_io.seek(0)
+    
+    # Upload the cleaned data to S3
+    s3 = boto3.client('s3')
+    s3.upload_fileobj(io.BytesIO(output_io.getvalue().encode()), bucket_name, s3_key)
+    output_io.close()
+    str_io.close()
+    print(f"Cleaned file uploaded to s3://{bucket_name}/{s3_key}")
 
 # Define S3 parameters
 bucket_name = 'hf-dev-cdp-kitewheel'
@@ -75,69 +113,26 @@ print(ndc_url)
 s3_json_path = download_and_extract_zip(ndc_url, bucket_name, s3_folder)
 
 # Define the schema for active ingredients
-active_ingredients_schema = StructType([
-    StructField("name", StringType(), True),
-    StructField("strength", StringType(), True),
-])
+# Download, clean, and extract the NDC data, and get the S3 path of the cleaned JSON
+s3_json_path = download_and_extract_zip(ndc_url, bucket_name, s3_folder)
 
-# Define the schema for packaging
-packaging_schema = StructType([
-    StructField("package_ndc", StringType(), True),
-    StructField("description", StringType(), True),
-    StructField("marketing_start_date", DateType(), True),
-    StructField("marketing_end_date", DateType(), True),
-    StructField("sample", StringType(), True),
-])
-
-# Define the schema for the openfda section
-openfda_schema = StructType([
-    StructField("is_original_packager", StringType(), True),
-    StructField("manufacturer_name", ArrayType(StringType()), True),
-    StructField("nui", StringType(), True),
-    StructField("pharm_class_cs", StringType(), True),
-    StructField("pharm_class_epc", StringType(), True),
-    StructField("pharm_class_moa", StringType(), True),
-    StructField("pharm_class_pe", StringType(), True),
-    StructField("rxcui", ArrayType(StringType()), True),
-    StructField("spl_set_id", StringType(), True),
-    StructField("unii", StringType(), True),
-    StructField("upc", StringType(), True),
-])
-
-# Define the complete schema for the NDC dataset
-ndc_schema = StructType([
-    StructField("product_id", StringType(), True),
-    StructField("product_ndc", StringType(), True),
-    StructField("spl_id", StringType(), True),
-    StructField("product_type", StringType(), True),
-    StructField("finished", StringType(), True),
-    StructField("brand_name", StringType(), True),
-    StructField("brand_name_base", StringType(), True),
-    StructField("brand_name_suffix", StringType(), True),
-    StructField("generic_name", StringType(), True),
-    StructField("dosage_form", StringType(), True),
-    StructField("route", StringType(), True),
-    StructField("marketing_start_date", DateType(), True),
-    StructField("marketing_end_date", DateType(), True),
-    StructField("marketing_category", StringType(), True),
-    StructField("application_number", StringType(), True),
-    StructField("pharm_class", StringType(), True),
-    StructField("dea_schedule", StringType(), True),
-    StructField("listing_expiration_date", DateType(), True),
-    StructField("active_ingredients", ArrayType(active_ingredients_schema), True),
-    StructField("packaging", ArrayType(packaging_schema), True),
-    StructField("openfda", openfda_schema, True),
-])
-
-# Convert to Spark DataFrame
+# Continue with your data processing as needed
 if s3_json_path:
-    # spark_df = spark.read.schema(ndc_schema).json(s3_json_path)
     spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
-
-    # Show schema and data
     spark_df.printSchema()
     spark_df.show()
     print('NDC data was read successfully.')
 
-# Stop Spark Context and commit job
-job.commit()
+
+# # Convert to Spark DataFrame
+# if s3_json_path:
+#     # spark_df = spark.read.schema(ndc_schema).json(s3_json_path)
+#     spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
+
+#     # Show schema and data
+#     spark_df.printSchema()
+#     spark_df.show()
+#     print('NDC data was read successfully.')
+
+# # Stop Spark Context and commit job
+# job.commit()
