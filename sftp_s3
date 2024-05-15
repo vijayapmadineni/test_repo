@@ -1,0 +1,108 @@
+import boto3
+import paramiko
+from datetime import datetime
+import uuid
+import psycopg2
+
+# AWS and SFTP setup
+s3 = boto3.client('s3')
+sftp_host = 'sftp_host'
+sftp_user = 'sftp_user'
+sftp_password = 'sftp_password'
+sftp_folder_path = '/dir1/dir2'
+archive_folder_path = '/dir1/dir2/archive'
+s3_bucket = 's3_test_bucket'
+s3_folder = 's3_folder1/s3_folder2'
+
+# PostgreSQL connection setup
+pg_conn = psycopg2.connect(
+    host='postgresql_host',
+    user='postgresqlid',
+    password='postgresqlpass',
+    dbname='database_name'
+)
+pg_cursor = pg_conn.cursor()
+
+def upload_files_to_s3():
+    transport = paramiko.Transport((sftp_host, 22))
+    transport.connect(username=sftp_user, password=sftp_password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+
+    files = sftp.listdir(sftp_folder_path)
+    for file in files:
+        if file.endswith('.pdf'):
+            memid = file.split('_')[0]
+            local_path = sftp.get(f"{sftp_folder_path}/{file}")
+            s3_path = f"{s3_folder}/{file}"
+            s3.upload_file(local_path, s3_bucket, s3_path)
+
+            s3link = f"s3://{s3_bucket}/{s3_path}"
+            filedetail_id = str(uuid.uuid4())
+            schedule_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Insert data into PostgreSQL
+            pg_cursor.execute(f"INSERT INTO schema1.table1 (filedetail_id, memid, s3link) VALUES (%s, %s, %s)",
+                              (filedetail_id, memid, s3link))
+            pg_cursor.execute(f"INSERT INTO schema1.table2 (filedetail_id, memid, schedule_dt) VALUES (%s, %s, %s)",
+                              (filedetail_id, memid, schedule_dt))
+            pg_conn.commit()
+
+            # Move file to archive
+            sftp.rename(f"{sftp_folder_path}/{file}", f"{archive_folder_path}/{file}")
+
+    sftp.close()
+    transport.close()
+
+upload_files_to_s3()
+pg_cursor.close()
+pg_conn.close()
+
+
+
+
+import paramiko
+from paramiko import SSHException
+
+# Define the path to your private SSH key
+private_key_path = '/path/to/your/private/key'
+
+def upload_files_to_s3():
+    transport = paramiko.Transport((sftp_host, 22))
+    try:
+        # Use a private key instead of a password
+        private_key = paramiko.RSAKey.from_private_key_file(private_key_path)
+        transport.connect(username=sftp_user, pkey=private_key)
+    except SSHException as e:
+        print(f"Failed to connect using the provided SSH key: {e}")
+        return
+
+    sftp = paramiko.SFTPClient.from_transport(transport)
+
+    files = sftp.listdir(sftp_folder_path)
+    for file in files:
+        if file.endswith('.pdf'):
+            memid = file.split('_')[0]
+            local_path = sftp.get(f"{sftp_folder_path}/{file}")
+            s3_path = f"{s3_folder}/{file}"
+            s3.upload_file(local_path, s3_bucket, s3_path)
+
+            s3link = f"s3://{s3_bucket}/{s3_path}"
+            filedetail_id = str(uuid.uuid4())
+            schedule_dt = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Insert data into PostgreSQL
+            pg_cursor.execute(f"INSERT INTO schema1.table1 (filedetail_id, memid, s3link) VALUES (%s, %s, %s)",
+                              (filedetail_id, memid, s3link))
+            pg_cursor.execute(f"INSERT INTO schema1.table2 (filedetail_id, memid, schedule_dt) VALUES (%s, %s, %s)",
+                              (filedetail_id, memid, schedule_dt))
+            pg_conn.commit()
+
+            # Move file to archive
+            sftp.rename(f"{sftp_folder_path}/{file}", f"{archive_folder_path}/{file}")
+
+    sftp.close()
+    transport.close()
+
+upload_files_to_s3()
+pg_cursor.close()
+pg_conn.close()
