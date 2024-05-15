@@ -54,3 +54,45 @@ root
  |-- route: array (nullable = true)
  |    |-- element: string (containsNull = true)
  |-- spl_id: string (nullable = true)
+
+
+exploded_df = df.withColumn("packaging", explode("packaging"))
+
+# Selecting fields and flattening the structure
+flattened_df = exploded_df.select(
+    col("product_id"),
+    col("product_ndc"),
+    col("product_type"),
+    col("application_number"),
+    col("brand_name"),
+    col("brand_name_base"),
+    col("brand_name_suffix"),
+    col("generic_name"),
+    col("dosage_form"),
+    col("labeler_name"),
+    col("marketing_category"),
+    col("dea_schedule"),
+    col("finished"),
+    col("marketing_start_date"),
+    col("marketing_end_date"),
+    col("listing_expiration_date"),
+    col("packaging.description").alias("packaging_description"),
+    col("packaging.marketing_end_date").alias("packaging_marketing_end_date"),
+    col("packaging.marketing_start_date").alias("packaging_marketing_start_date"),
+    col("packaging.package_ndc").alias("package_ndc"),
+    col("packaging.sample").alias("sample"),
+    col("route"),
+    col("spl_id"),
+    col("openfda.manufacturer_name").alias("manufacturer_name"),
+    col("openfda.rxcui").alias("rxcui"),
+    col("openfda.unii").alias("unii"),
+    col("openfda.spl_set_id").alias("spl_set_id"),
+    col("openfda.pharm_class_cs").alias("pharm_class_cs"),
+    col("openfda.pharm_class_epc").alias("pharm_class_epc"),
+    col("openfda.pharm_class_moa").alias("pharm_class_moa"),
+    col("openfda.pharm_class_pe").alias("pharm_class_pe"),
+    col("openfda.upc").alias("upc")
+)
+
+# Show the flattened structure for verification
+flattened_df.show()
