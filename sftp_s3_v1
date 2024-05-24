@@ -1,0 +1,158 @@
+import os
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.functions import explode, lit, array, struct, col, unix_timestamp
+from pyspark.sql.types import *
+import boto3
+import psycopg2
+from datetime import datetime
+import pytz
+import logging
+import re
+import paramiko
+import uuid
+
+# @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 's3bucket', 's3_folder', 'aspen_sftp_path', 'aspen_sftp_host', 'aspen_sftp_archive_path', 'cloud_front_url'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+
+
+# function to get glue connections and credentials
+def get_glue_connection(connectionName):
+    glueClient = boto3.client('glue', region_name='us-east-1')
+    response = glueClient.get_connection(Name=connectionName,HidePassword=False)
+    creds = {}
+    creds['username'] = response['Connection']['ConnectionProperties']['USERNAME']
+    creds['password'] = response['Connection']['ConnectionProperties']['PASSWORD']
+    creds['url'] = response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
+    match = re.match(r'jdbc:(\w+)://([^:/]+):(\d+)/([^?]+)', creds['url'])
+    creds['connection_type'] = match.group(1)
+    creds['host'] = match.group(2)
+    creds['port'] = match.group(3)
+    creds['db'] = match.group(4)
+    return creds
+
+# function to execute postgresql query using psycopg2 module
+def cdm_execute_qry(qry,username,password,host,db,port):
+    print(f"Execute: {qry}")
+    conn = psycopg2.connect(database=db, user=username, password=password, host=host, port=port)
+    cur = conn.cursor()
+    cur.execute(qry)
+    row_cnt=cur.rowcount
+    if cur.pgresult_ptr is not None:
+        data_qry = cur.fetchone()
+    else:
+        data_qry=()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row_cnt, data_qry
+
+def upload_files_to_s3():
+    processed_files = []
+    transport = paramiko.Transport((sftp_host, 22))
+    transport.connect(username=sftp_username, password=sftp_password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+
+    files = sftp.listdir(sftp_folder_path)
+    for file in files:
+        if file.endswith('.pdf'):
+            processed_files.append(file)
+            memid = file.split('_')[0]
+            local_path = sftp.get(f"{sftp_folder_path}/{file}", file)
+            print(local_path)
+            s3_path = f"{s3_folder}/{file}"
+            s3.upload_file(file, s3bucket, s3_path)
+
+            s3link = f"https://{cloud_front_url}.cloudfront.net/{s3_path}"
+            filedetail_id = str(uuid.uuid4())
+            today_dtm = datetime.now(ny_tz).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Insert data into PostgreSQL
+            pg_cursor.execute(f"INSERT INTO kwdm.ecm_fax_filedetails (ecm_fax_filedetails_id, member_id, file_path, file_type, fax_type, created_by, created_dt) VALUES (%s, %s, %s, %s, %s, %s, %s)", (filedetail_id, memid, s3link, 'pdf', 'providerfax', job_name, today_dtm))
+            pg_cursor.execute(f"INSERT INTO kwdm.journey_orchestration (message_eventid, hf_member_num_cd, message_type, channel, message_status, created_dt, actual_scheduled_dt, journey_name, sub_journey_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", (filedetail_id, memid, 'PROVIDER_FAX', 'FAX', 'scheduled', today_dtm, today_dtm, 'mtmprovider', 'providerfax' ))
+            pg_conn.commit()
+
+            # Move file to archive
+            sftp.rename(f"{sftp_folder_path}/{file}", f"{sftp_archive_path}/{file}")
+
+    sftp.close()
+    transport.close()
+    if processed_files:
+        all_files = ", ".join(processed_files)
+    else:
+        all_files = 'No files to process'
+    print(f'All files processed: {all_files}')
+    return all_files
+# configure logging
+job_name = args['JOB_NAME']
+logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logger = logging.getLogger(job_name)
+logger.setLevel(logging.INFO)
+
+# get cdm credentials
+logger.info("Start: Get cdm Credentials")
+cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+cdm_username=cdm_creds['username']
+cdm_password=cdm_creds['password']
+cdm_url=cdm_creds['url']
+cdm_host=cdm_creds['host']
+cdm_port=cdm_creds['port']
+cdm_db=cdm_creds['db']
+logger.info("End: Get cdm Credentials")
+
+logger.info("Start: Get sftp Credentials")
+sftp_creds = get_glue_connection('hf-sfmc-sftp')
+sftp_username = sftp_creds['username']
+sftp_password = sftp_creds['password']
+sftp_host=args['aspen_sftp_host']
+sftp_host='hfftp.healthfirst.org'
+packetsize=1024
+port=22
+sftp_folder_path=args['aspen_sftp_path']
+sftp_archive_path=args['aspen_sftp_archive_path']
+logger.info("End: Get sftp Credentials")
+
+s3bucket = args['s3bucket']
+s3_folder = args['s3_folder']
+cloud_front_url = args['cloud_front_url']
+
+
+ny_tz = pytz.timezone('US/Eastern')
+# insert starting job entry into the aws glue job log table.
+logger.info("Start: Insert job start entry into aws_glue_job_log")
+job_start_dtm = datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
+strt_log_qry = f"insert into kwdm.aws_glue_job_log(job_name, start_time, job_status) values('{job_name}', '{job_start_dtm}','started');"
+cdm_execute_qry(strt_log_qry, cdm_username, cdm_password, cdm_host, cdm_db, cdm_port)
+logger.info("End: Insert job start entry into aws_glue_job_log")
+
+s3 = boto3.client('s3')
+pg_conn = psycopg2.connect(
+    host=cdm_host,
+    user=cdm_username,
+    password=cdm_password,
+    dbname=cdm_db
+)
+pg_cursor = pg_conn.cursor()
+all_files = upload_files_to_s3()
+pg_cursor.close()
+pg_conn.close()
+
+# insert ending job entry into the aws glue job log table.
+logger.info("Start: Update job end entry in aws_glue_job_log")
+job_end_dtm = datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
+end_log_qry = f"update kwdm.aws_glue_job_log set source_count=null, insert_count= null, update_count=null, delete_count=null, comments= '{all_files}', end_time='{job_end_dtm}', job_status='completed' where job_name='{job_name}' and start_time='{job_start_dtm}';"
+cdm_execute_qry(end_log_qry, cdm_username, cdm_password, cdm_host, cdm_db, cdm_port)
+logger.info("End: Update job end entry in aws_glue_job_log")
+
+job.commit()
