@@ -1,0 +1,16 @@
+2024-06-07 01:43:19 ERROR Test_job: Failed to upload files: No meta_data files were uploaded to S3.
+Traceback (most recent call last):
+  File "/opt/project/.venv/test_sftp.py", line 115, in upload_files
+    raise Exception("No meta_data files were uploaded to S3.")
+Exception: No meta_data files were uploaded to S3.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/project/.venv/test_sftp.py", line 158, in <module>
+    main()
+  File "/opt/project/.venv/test_sftp.py", line 148, in main
+    upload_files(sftp, s3, args['aspen_sftp_path'], args['kw_s3bucket'], 'meta_data_', 'provider_fax_meta_files', logger)
+  File "/opt/project/.venv/test_sftp.py", line 121, in upload_files
+    raise Exception(f"Failed to upload files: {str(e)}")
+Exception: Failed to upload files: No meta_data files were uploaded to S3.
