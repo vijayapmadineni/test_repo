@@ -1,16 +1,9 @@
-2024-06-07 01:43:19 ERROR Test_job: Failed to upload files: No meta_data files were uploaded to S3.
-Traceback (most recent call last):
-  File "/opt/project/.venv/test_sftp.py", line 115, in upload_files
-    raise Exception("No meta_data files were uploaded to S3.")
-Exception: No meta_data files were uploaded to S3.
+upload_pdfs_to_s3_udf = udf(lamdba  PDF_file_name, ConsultId: upload_pdfs_to_s3(PDF_file_name, ConsultId, sftp, s3, lit(args['aspen_sftp_path']), lit(args['fax_s3bucket']), lit(args['cloud_front_url']), cdm_creds, logger, args['JOB_NAME']), StringType())
 
-During handling of the above exception, another exception occurred:
 
-Traceback (most recent call last):
-  File "/opt/project/.venv/test_sftp.py", line 158, in <module>
-    main()
-  File "/opt/project/.venv/test_sftp.py", line 148, in main
-    upload_files(sftp, s3, args['aspen_sftp_path'], args['kw_s3bucket'], 'meta_data_', 'provider_fax_meta_files', logger)
-  File "/opt/project/.venv/test_sftp.py", line 121, in upload_files
-    raise Exception(f"Failed to upload files: {str(e)}")
-Exception: Failed to upload files: No meta_data files were uploaded to S3.
+An error was encountered:
+invalid syntax. Perhaps you forgot a comma? (<stdin>, line 1)
+  File "<stdin>", line 1
+    upload_pdfs_to_s3_udf = udf(lamdba  PDF_file_name, ConsultId: upload_pdfs_to_s3(PDF_file_name, ConsultId, sftp, s3, lit(args['aspen_sftp_path']), lit(args['fax_s3bucket']), lit(args['cloud_front_url']), cdm_creds, logger, args['JOB_NAME']), StringType())
+                                ^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: invalid syntax. Perhaps you forgot a comma?
