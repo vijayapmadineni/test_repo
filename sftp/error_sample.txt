@@ -1,9 +1,18 @@
-upload_pdfs_to_s3_udf = udf(lamdba  PDF_file_name, ConsultId: upload_pdfs_to_s3(PDF_file_name, ConsultId, sftp, s3, lit(args['aspen_sftp_path']), lit(args['fax_s3bucket']), lit(args['cloud_front_url']), cdm_creds, logger, args['JOB_NAME']), StringType())
-
-
-An error was encountered:
-invalid syntax. Perhaps you forgot a comma? (<stdin>, line 1)
-  File "<stdin>", line 1
-    upload_pdfs_to_s3_udf = udf(lamdba  PDF_file_name, ConsultId: upload_pdfs_to_s3(PDF_file_name, ConsultId, sftp, s3, lit(args['aspen_sftp_path']), lit(args['fax_s3bucket']), lit(args['cloud_front_url']), cdm_creds, logger, args['JOB_NAME']), StringType())
-                                ^^^^^^^^^^^^^^^^^^^^^
-SyntaxError: invalid syntax. Perhaps you forgot a comma?
+DO $$
+DECLARE
+  row_count int := 1;
+  batch_size int := 10000;  -- Adjust the batch size based on your system's performance
+BEGIN
+  WHILE row-f_count > 0 LOOP
+    WITH updated AS (
+      UPDATE your_table_name
+      SET column2 = TO_CHAR(column1, 'FM00'),
+          column4 = TO_CHAR(column3, 'FM00')
+      WHERE column2 IS NULL OR column4 IS NULL
+      RETURNING 1
+      LIMIT batch_size
+    )
+    SELECT count(*) INTO row_count FROM updated;
+  END LOOP;
+END;
+$$;
