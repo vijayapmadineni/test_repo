@@ -1,18 +1,13 @@
-DO $$
-DECLARE
-  row_count int := 1;
-  batch_size int := 10000;  -- Adjust the batch size based on your system's performance
-BEGIN
-  WHILE row-f_count > 0 LOOP
-    WITH updated AS (
-      UPDATE your_table_name
-      SET column2 = TO_CHAR(column1, 'FM00'),
-          column4 = TO_CHAR(column3, 'FM00')
-      WHERE column2 IS NULL OR column4 IS NULL
-      RETURNING 1
-      LIMIT batch_size
-    )
-    SELECT count(*) INTO row_count FROM updated;
-  END LOOP;
-END;
-$$;
+curl --location 'location.com' \
+--header 'client_id: xxxx_client_id' \
+--header 'client_secret: xxxxx_client_secret' \
+--header 'application_id: xxxxxx_application_id' \
+--header 'username: username@username.com' \
+--header 'password: pass_word' \
+--header 'scope: user.read'curl --location 'location.com' \
+--header 'client_id: xxxx_client_id' \
+--header 'client_secret: xxxxx_client_secret' \
+--header 'application_id: xxxxxx_application_id' \
+--header 'username: username@username.com' \
+--header 'password: pass_word' \
+--header 'scope: user.read'
