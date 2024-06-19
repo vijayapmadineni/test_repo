@@ -1,13 +1,24 @@
-curl --location 'location.com' \
---header 'client_id: xxxx_client_id' \
---header 'client_secret: xxxxx_client_secret' \
---header 'application_id: xxxxxx_application_id' \
---header 'username: username@username.com' \
---header 'password: pass_word' \
---header 'scope: user.read'curl --location 'location.com' \
---header 'client_id: xxxx_client_id' \
---header 'client_secret: xxxxx_client_secret' \
---header 'application_id: xxxxxx_application_id' \
---header 'username: username@username.com' \
---header 'password: pass_word' \
---header 'scope: user.read'
+curl --location --globoff 'https://hf-edr-services-rt.us-e1.cloudhub.io/v1/documents'
+\
+--header 'client_id: {{applicationId}}' \
+--header 'Content-Type: application/json' \
+--data '{
+    "DocumentProperties": {
+        "CustomerType": "Provider",
+        "DocumentCategory" : "Payment_Integrity_Letter",
+        "DocumentTypeName": "Subrogation_Letter",
+        "DocumentDate": "2021-07-23",
+        "DocumentID": "DEV-12055127",
+        "DocumentName": "DEV-12055127.pdf",
+        "Description": "DHP Letters data updated"
+    },
+    "DocumentContent": {
+        "DocumentStream":"" 
+    },
+    "DocumentAttribute": [
+       {
+	   "AttributeName": "hf:Provider_ID",
+	   "AttributeValue": "1234"
+       }
+    ]
+}'
