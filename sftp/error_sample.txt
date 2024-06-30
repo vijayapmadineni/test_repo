@@ -1,10 +1,23 @@
-Instructions for Loading Open Records into the KWDM Table
-Job Name: xxxxxx
-Ensure the file is in CSV format and verify the counts with the CJA team before loading it into the KWDM table.
-The file name should follow this format: open_missed_pended_yyyymmdd.csv.
-Place the file in the SFMC SFTP location. This location can be accessed using the SFTP user sfmc or via the shared drive at:
-Location: \\sv=sftp1p.com\ssftp\sfmc\alter_opens\
-Run the job:
-The existing table data will be moved to the backup table table1_bkp.
-The new data will be loaded into table1.
-Ensure that the counts between table1 and the CSV file match.
+def execute_query(query, creds, params=None, fetch_one=False):
+    """
+    Executes a SQL query on a PostgreSQL database with optional parameters.
+    Args:
+    - query: SQL query string.
+    - creds: Dictionary containing database credentials.
+    - params: Tuple of parameters for the SQL query (optional).
+    - fetch_one: Boolean indicating whether to fetch only one record from the query results
+    Retuns:
+    - if fetch_one is True, returns a single record or None
+    - if fetch_one is False, returns the number of affected rows.
+    """
+    with psycopg2.connect(database=creds['db'], user=creds['username'], password=creds['password'], host=creds['host'], port=creds['port']) as conn:
+        with conn.cursor() as cur:
+            if params:
+                cur.execute(query, params)
+            else:
+                cur.execute(query)
+            if fetch_one:
+                return cur.fetchone()
+            else:
+                conn.commit()
+                return cur.rowcount
