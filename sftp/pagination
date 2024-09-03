@@ -1,0 +1,24 @@
+def delete_old_s3_files(bucket, prefix, date_threshold, s3_client):
+    response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    if 'Contents' in response:
+        i = 0
+        for file in response['Contents']:
+            file_key = file['Key']
+            if "/" in file_key:
+                file_name = file_key.split("/")[-1]
+                file_date_str = file_name.split("_")[-1].split(".")[0].ljust(14,'0')
+                try:
+                    file_date = datetime.strptime(file_date_str, "%Y%m%d%H%M%S")
+                    if file_date < date_threshold:
+                        # s3_client.delete_object(Bucket=bucket, Key=file_key)
+                        print(f"bucket: {bucket}, deleted older file name: {file_key}")
+                        i += 1
+                except ValueError:
+                    continue
+        print(f"Deleted {i} files older than threshold {date_threshold}")
+
+
+args = getResolvedOptions(sys.argv, ['JOB_NAME','purpose_name','s3bucket'])
+s3 = boto3.client('s3')
+date_threshold = datetime.now() - timedelta(days=2)
+delete_old_s3_files(args['s3bucket'], 'pref_mgmt/sfmc/archive/', date_threshold, s3)
