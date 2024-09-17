@@ -1,0 +1,13 @@
+    # insert starting job entry into the aws glue job log table.
+    logger.info("Start: Insert job start entry into aws_glue_job_log")
+    job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    strt_log_qry = f"insert into kwdm.aws_glue_job_log(job_name, start_time, job_status) values('{args['JOB_NAME']}', '{job_start_dtm}','started');"
+    execute_query(strt_log_qry, cdm_creds)
+    logger.info("End: Insert job start entry into aws_glue_job_log")
+
+    # insert ending job entry into the aws glue job log table.
+    logger.info("Start: Update job end entry in aws_glue_job_log")
+    job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    end_log_qry = f"update kwdm.aws_glue_job_log set source_count=null, insert_count= null, update_count=null, delete_count=null, comments= 'this week folder name: {this_week_fldr}; success_files: {success_files_str}; failed_files: {failed_files_str}', end_time='{job_end_dtm}', job_status='completed' where job_name='{args['JOB_NAME']}' and start_time='{job_start_dtm}';"
+    execute_query(end_log_qry, cdm_creds)
+    logger.info("End: Update job end entry in aws_glue_job_log")
