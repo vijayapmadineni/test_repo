@@ -1,70 +1,15 @@
-def log_job_start(creds, job_name):
-    """
-    Logs the start of an AWS Glue job.
-    Args:
-    - creds: Database credentials.
-    - job_name: Name of the Glue job.
-    Returns:
-    - The start time of the job, which is needed for ending the job entry.
-    """
-    logger.info("Start: Insert job start entry into aws_glue_job_log")
-    job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Parameterized query to insert the start entry
-    query = """
-        INSERT INTO kwdm.aws_glue_job_log (job_name, start_time, job_status)
-        VALUES (%s, %s, %s);
-    """
-    execute_query(query, creds, (job_name, job_start_dtm, 'started'))
-    
-    logger.info("End: Insert job start entry into aws_glue_job_log")
-    return job_start_dtm
-
-
-
-
-def log_job_end(creds, job_name, job_start_dtm, 
-                comments=None, source_count=None, insert_count=None, 
-                update_count=None, delete_count=None):
-    """
-    Logs the end of an AWS Glue job.
-    Args:
-    - creds: Database credentials.
-    - job_name: Name of the Glue job.
-    - job_start_dtm: The start time of the job to match the log entry.
-    - comments: Optional comments for the job log.
-    - source_count: Optional source count for the job log (default: None).
-    - insert_count: Optional insert count for the job log (default: None).
-    - update_count: Optional update count for the job log (default: None).
-    - delete_count: Optional delete count for the job log (default: None).
-    """
-    logger.info("Start: Update job end entry in aws_glue_job_log")
-    job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Construct the SQL query with parameterized values
-    query = """
-        UPDATE kwdm.aws_glue_job_log 
-        SET source_count = %s, 
-            insert_count = %s, 
-            update_count = %s, 
-            delete_count = %s, 
-            comments = %s, 
-            end_time = %s, 
-            job_status = %s 
-        WHERE job_name = %s AND start_time = %s;
-    """
-    
-    # Execute the query, passing None for any values that are not provided
-    execute_query(query, creds, (
-        source_count, insert_count, update_count, delete_count, 
-        comments, job_end_dtm, 'completed', job_name, job_start_dtm
-    ))
-    
-    logger.info("End: Update job end entry in aws_glue_job_log")
-
-
-
-
-log_job_end(cdm_creds, args['JOB_NAME'], job_start_time, 
-            comments="Job completed successfully.", 
-            source_count=100, insert_count=50, update_count=30, delete_count=20)
+  GlueFailCloudwatchRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Send failed Glue job details to an SNS topic
+      EventPattern:
+        {
+          "source": ["aws.glue"],
+          "detail-type": ["Glue Job State Change"],
+          "detail": { "jobName": ["xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx"] },
+        }
+      Name: glue_failure_to_sns
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt FunctionLogGlueJobStatusMarketing.Arn
+          Id: FunctionLogGlueJobStatusMarketing_id
