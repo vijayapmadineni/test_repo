@@ -1,46 +1,70 @@
-
-def execute_query(query, creds, params=None, fetch_one=False):
+def log_job_start(creds, job_name):
     """
-    Executes a SQL query on a PostgreSQL database with optional parameters.
+    Logs the start of an AWS Glue job.
     Args:
-    - query: SQL query string.
-    - creds: Dictionary containing database credentials.
-    - params: Tuple of parameters for the SQL query (optional).
-    - fetch_one: Boolean indicating whether to fetch only one record from the query results
-    Retuns:
-    - if fetch_one is True, returns a single record or None
-    - if fetch_one is False, returns the number of affected rows.
+    - creds: Database credentials.
+    - job_name: Name of the Glue job.
+    Returns:
+    - The start time of the job, which is needed for ending the job entry.
     """
-    conn = psycopg2.connect(database=creds['db'], user=creds['username'], password=creds['password'], host=creds['host'], port=creds['port'])
-    cur = conn.cursor()
-
-    try:
-        if params:
-            cur.execute(query, params)
-        else:
-            cur.execute(query)
-
-        if fetch_one:
-            result = cur.fetchone()
-        else:
-            conn.commit()
-            result = cur.rowcount
-    finally:
-        cur.close()
-        conn.close()
-    return result
-
-
-# insert starting job entry into the aws glue job log table.
     logger.info("Start: Insert job start entry into aws_glue_job_log")
     job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    strt_log_qry = f"insert into kwdm.aws_glue_job_log(job_name, start_time, job_status) values('{args['JOB_NAME']}', '{job_start_dtm}','started');"
-    execute_query(strt_log_qry, cdm_creds)
+    
+    # Parameterized query to insert the start entry
+    query = """
+        INSERT INTO kwdm.aws_glue_job_log (job_name, start_time, job_status)
+        VALUES (%s, %s, %s);
+    """
+    execute_query(query, creds, (job_name, job_start_dtm, 'started'))
+    
     logger.info("End: Insert job start entry into aws_glue_job_log")
+    return job_start_dtm
 
-    # insert ending job entry into the aws glue job log table.
+
+
+
+def log_job_end(creds, job_name, job_start_dtm, 
+                comments=None, source_count=None, insert_count=None, 
+                update_count=None, delete_count=None):
+    """
+    Logs the end of an AWS Glue job.
+    Args:
+    - creds: Database credentials.
+    - job_name: Name of the Glue job.
+    - job_start_dtm: The start time of the job to match the log entry.
+    - comments: Optional comments for the job log.
+    - source_count: Optional source count for the job log (default: None).
+    - insert_count: Optional insert count for the job log (default: None).
+    - update_count: Optional update count for the job log (default: None).
+    - delete_count: Optional delete count for the job log (default: None).
+    """
     logger.info("Start: Update job end entry in aws_glue_job_log")
     job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    end_log_qry = f"update kwdm.aws_glue_job_log set source_count=null, insert_count= null, update_count=null, delete_count=null, comments= 'this week folder name: {this_week_fldr}; success_files: {success_files_str}; failed_files: {failed_files_str}', end_time='{job_end_dtm}', job_status='completed' where job_name='{args['JOB_NAME']}' and start_time='{job_start_dtm}';"
-    execute_query(end_log_qry, cdm_creds)
+    
+    # Construct the SQL query with parameterized values
+    query = """
+        UPDATE kwdm.aws_glue_job_log 
+        SET source_count = %s, 
+            insert_count = %s, 
+            update_count = %s, 
+            delete_count = %s, 
+            comments = %s, 
+            end_time = %s, 
+            job_status = %s 
+        WHERE job_name = %s AND start_time = %s;
+    """
+    
+    # Execute the query, passing None for any values that are not provided
+    execute_query(query, creds, (
+        source_count, insert_count, update_count, delete_count, 
+        comments, job_end_dtm, 'completed', job_name, job_start_dtm
+    ))
+    
     logger.info("End: Update job end entry in aws_glue_job_log")
+
+
+
+
+log_job_end(cdm_creds, args['JOB_NAME'], job_start_time, 
+            comments="Job completed successfully.", 
+            source_count=100, insert_count=50, update_count=30, delete_count=20)
