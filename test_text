@@ -1,15 +1,187 @@
-  GlueFailCloudwatchRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Description: Send failed Glue job details to an SNS topic
-      EventPattern:
-        {
-          "source": ["aws.glue"],
-          "detail-type": ["Glue Job State Change"],
-          "detail": { "jobName": ["xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx","xxxxxxxxxxxxxxxxxxxxxxxxxxx"] },
-        }
-      Name: glue_failure_to_sns
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt FunctionLogGlueJobStatusMarketing.Arn
-          Id: FunctionLogGlueJobStatusMarketing_id
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import lit, unix_timestamp, explode_outer, col, concat_ws, to_json
+from pyspark.sql.types import *
+import boto3
+import psycopg2
+from datetime import datetime, timedelta
+import pytz
+import logging
+import re
+import requests
+import zipfile
+import io
+import json
+
+sys.argv += ['--JOB_NAME', 'ndc_codes_v1.py']
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+job_name=args['JOB_NAME']
+
+def get_glue_connection(connectionName):
+    glueClient = boto3.client('glue', region_name='us-east-1')
+    response = glueClient.get_connection(Name=connectionName,HidePassword=False)
+    creds = {}
+    creds['username'] = response['Connection']['ConnectionProperties']['USERNAME']
+    creds['password'] = response['Connection']['ConnectionProperties']['PASSWORD']
+    creds['url'] = response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
+    match = re.match(r'jdbc:(\w+)://([^:/]+):(\d+)/([^?]+)', creds['url'])
+    creds['connection_type'] = match.group(1)
+    creds['host'] = match.group(2)
+    creds['port'] = match.group(3)
+    creds['db'] = match.group(4)
+    return creds
+
+def upload_to_s3(bucket_name, s3_key, file_data):
+    try:
+        s3 = boto3.client('s3')
+        s3.upload_fileobj(file_data, bucket_name, s3_key)
+    except Exception as e:
+        print(str(e))
+
+def stream_clean_json(file_stream, bucket_name, s3_key):
+    # Convert byte stream to StringIO for text manipulation
+    str_io = io.StringIO(file_stream.read().decode('utf-8'))
+    output_io = io.StringIO()
+    
+    capture = False
+    buffer = []  # to handle the removal of the last line
+    for line in str_io:
+        if '"results": [' in line:
+            line = line.replace('"results": [', '[')  # Start capturing after replacing the line
+            capture = True
+        if capture:
+            buffer.append(line)
+    
+    # Remove the last line from buffer before writing to output
+    if buffer:
+        buffer.pop()  # Remove the last line
+    
+    # Write the modified content to output_io
+    for line in buffer:
+        output_io.write(line)
+    
+    # Move back to the start of the StringIO buffer
+    output_io.seek(0)
+    
+    # Upload the cleaned data to S3
+    s3 = boto3.client('s3')
+    s3.upload_fileobj(io.BytesIO(output_io.getvalue().encode()), bucket_name, s3_key)
+    output_io.close()
+    str_io.close()
+    print(f"Cleaned file uploaded to s3://{bucket_name}/{s3_key}")
+
+
+def download_and_extract_zip(url, bucket_name, s3_folder):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as the_zip:
+            for file_name in the_zip.namelist():
+                print(f'Extracting {file_name}')
+                # Extract file content
+                with the_zip.open(file_name) as file:
+                    cleaned_s3_key = f'{s3_folder}/cleaned_{file_name}'
+                    stream_clean_json(file, bucket_name, cleaned_s3_key)
+                    return f's3://{bucket_name}/{cleaned_s3_key}'
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred: {http_err}")
+    except Exception as err:
+        print(f"Other error occurred: {err}")
+
+# get cdm credentials
+cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+cdm_username=cdm_creds['username']
+cdm_password=cdm_creds['password']
+cdm_url=cdm_creds['url']
+cdm_host=cdm_creds['host']
+cdm_port=cdm_creds['port']
+cdm_db=cdm_creds['db']
+
+# Define S3 parameters
+bucket_name = 'hf-st-cdp-kitewheel'
+s3_folder = 'ndc_test/to/json-files'
+
+# Fetching the JSON data from the URL
+src_url = "https://api.fda.gov/download.json"
+response = requests.get(src_url)
+data = response.json()
+
+# Extract the NDC URL
+ndc_url = data['results']['drug']['ndc']['partitions'][0]['file']
+
+# Continue processing as needed
+print(ndc_url)
+
+s3_json_path = download_and_extract_zip(ndc_url, bucket_name, s3_folder)
+
+
+# Continue with your data processing as needed
+if s3_json_path:
+    spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
+    spark_df = spark_df.withColumn("packaging", explode_outer("packaging"))
+    print('NDC data was read successfully.')
+    flattened_df = spark_df.select(
+    col("product_id"),
+    col("product_ndc"),
+    col("product_type"),
+    col("application_number"),
+    col("brand_name"),
+    col("brand_name_base"),
+    col("brand_name_suffix"),
+    col("generic_name"),
+    col("dosage_form"),
+    col("labeler_name"),
+    col("marketing_category"),
+    col("dea_schedule"),
+    col("finished"),
+    col("marketing_start_date"),
+    col("marketing_end_date"),
+    col("listing_expiration_date"),
+    col("pharm_class"),
+    col("route"),
+    col("spl_id"),
+    # Packaging details
+    col("packaging.description").alias("packaging_description"),
+    col("packaging.marketing_end_date").alias("packaging_marketing_end_date"),
+    col("packaging.marketing_start_date").alias("packaging_marketing_start_date"),
+    col("packaging.package_ndc").alias("package_ndc"),
+    col("packaging.sample").alias("sample"),
+    # Active ingredients details
+    to_json(col("active_ingredients")).alias("active_ingredients"),
+    # concat_ws(", ", col("active_ingredients.name")).alias("active_ingredient_name"),
+    # concat_ws(", ", col("active_ingredients.strength")).alias("active_ingredient_strength"),
+    to_json(col("openfda")).alias("openfda")
+    )
+    
+    flattened_df.printSchema()
+    flattened_df.show(n=5, truncate=False)
+    flattened_df_cnt = flattened_df.count()
+    print(f"flattened_df_cnt: {flattened_df_cnt}")
+
+    flattened_df.write.format("jdbc").option("url", cdm_url).option("driver", "org.postgresql.Driver").option("dbtable", "kwdm.drug_ndc_codes").mode("append").option("user", cdm_username).option("password", cdm_password).option("batchsize", 1000).save()
+
+    
+
+# if s3_json_path:
+#     # spark_df = spark.read.schema(ndc_schema).json(s3_json_path)
+#     spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
+
+#     # Show schema and data
+#     spark_df.printSchema()
+#     spark_df.show()
+#     print('NDC data was read successfully.')
+
+# Stop Spark Context and commit joba
+job.commit()
