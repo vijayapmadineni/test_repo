@@ -4,7 +4,7 @@ from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
-from pyspark.sql.functions import lit, unix_timestamp, explode_outer, col, concat_ws, to_json
+from pyspark.sql.functions import lit, unix_timestamp, explode_outer, col, concat_ws, to_json, struct, current_date
 from pyspark.sql import SparkSession
 import boto3
 from datetime import datetime
@@ -13,169 +13,26 @@ import logging
 import zipfile
 import io
 import pytz
-from elasticsearch import Elasticsearch, RequestsHttpConnection
+from elasticsearch import Elasticsearch, RequestsHttpConnection, helpers
 from requests_aws4auth import AWS4Auth
 import psycopg2
 import re
 import json
+from functools import partial
 
+sys.argv += ['--JOB_NAME', 'your_job_name', '--kw_s3bucket', 'your_bucket', '--src_url', 'https://api.fda.gov/download.json', '--es_endpoint', 'https://your-es-endpoint.us-east-1.es.amazonaws.com']
 
+def es_bulk_insert(partition, es_client, es_index):
+    actions = [
+        {"_index": es_index, "_type": "_doc", "_source": row.asDict(recursive=True)}
+        for row in partition
+    ]
+    if actions:
+        helpers.bulk(es_client, actions)
 
-sys.argv += ['--JOB_NAME', 'cde_si_job_acumen_pdc_reconciliation_test', '--kw_s3bucket', 'hf-dev-cdp-kitewheel', '--hf_sftp_path', '/SFMC/RT/MedAdherence/acumen_pdc/', '--src_url', 'https://api.fda.gov/download.json', '--es_endpoint', 'https://vpc-cde-dev-formulary-es-iq3pkszejm2emseuejgp77b3vu.us-east-1.es.amazonaws.com']
-
-REGION = 'us-east-1'
-NY_TZ = pytz.timezone('US/Eastern')
-
-
-def setup_logging(job_name):
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    logger = logging.getLogger(job_name)
-    logger.setLevel(logging.INFO)
-    return logger
-
-
-def get_glue_connection(connection_name):
-    glue_client = boto3.client('glue', region_name=REGION)
-    response = glue_client.get_connection(Name=connection_name, HidePassword=False)
-    creds = {
-        'username': response['Connection']['ConnectionProperties']['USERNAME'],
-        'password': response['Connection']['ConnectionProperties']['PASSWORD'],
-        'url': response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
-    }
-    match = re.match(r'jdbc:(\w+)://([^:/]+):(\d+)/([^?]+)', creds['url'])
-    creds.update({
-        'connection_type': match.group(1),
-        'host': match.group(2),
-        'port': match.group(3),
-        'db': match.group(4)
-    })
-    return creds
-
-
-def execute_query(query, creds, params=None, fetch_one=False):
-    """
-    Executes a SQL query on a PostgreSQL database with optional parameters.
-    Args:
-    - query: SQL query string.
-    - creds: Dictionary containing database credentials.
-    - params: Tuple of parameters for the SQL query (optional).
-    - fetch_one: Boolean indicating whether to fetch only one record from the query results
-    Retuns:
-    - if fetch_one is True, returns a single record or None
-    - if fetch_one is False, returns the number of affected rows.
-    """
-    conn = psycopg2.connect(database=creds['db'], user=creds['username'], password=creds['password'], host=creds['host'], port=creds['port'])
-    cur = conn.cursor()
-
-    try:
-        if params:
-            cur.execute(query, params)
-        else:
-            cur.execute(query)
-
-        if fetch_one:
-            result = cur.fetchone()
-        else:
-            conn.commit()
-            result = cur.rowcount
-    finally:
-        cur.close()
-        conn.close()
-    return result
-
-
-def log_job_start(creds, logger, job_name, status):
-    logger.info("Start: Insert job start entry into aws_glue_job_log")
-    job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    # Parameterized query to insert the start entry
-    query = """
-        INSERT INTO kwdm.aws_glue_job_log (job_name, start_time, job_status)
-        VALUES (%s, %s, %s);
-    """
-    execute_query(query, creds, (job_name, job_start_dtm, status))
-    logger.info("End: Insert job start entry into aws_glue_job_log")
-    return job_start_dtm
-
-
-def log_job_end(creds, logger, job_name, job_start_dtm, status, comments=None, source_count=None, insert_count=None, update_count=None, delete_count=None):
-    logger.info("Start: Update job end entry in aws_glue_job_log")
-    job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    # Construct the SQL query with parameterized values
-    query = """
-        UPDATE kwdm.aws_glue_job_log 
-        SET source_count = %s, 
-            insert_count = %s, 
-            update_count = %s, 
-            delete_count = %s, 
-            comments = %s, 
-            end_time = %s, 
-            job_status = %s 
-        WHERE job_name = %s AND start_time = %s;
-    """
-    # Execute the query, passing None for any values that are not provided
-    execute_query(query, creds, (source_count, insert_count, update_count, delete_count, comments, job_end_dtm, status, job_name, job_start_dtm))
-    logger.info("End: Update job end entry in aws_glue_job_log")
-
-
-def download_and_extract_zip(s3, url, bucket_name, s3_folder):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-
-        with zipfile.ZipFile(io.BytesIO(response.content)) as the_zip:
-            for file_name in the_zip.namelist():
-                print(f'Extracting {file_name}')
-                # Extract file content
-                with the_zip.open(file_name) as file:
-                    cleaned_s3_key = f'{s3_folder}cleaned_{file_name}'
-                    stream_clean_json(s3, file, bucket_name, cleaned_s3_key)
-                    return f's3://{bucket_name}/{cleaned_s3_key}'
-    except requests.exceptions.HTTPError as http_err:
-        print(f"HTTP error occurred: {http_err}")
-    except Exception as err:
-        print(f"Other error occurred: {err}")
-
-
-def stream_clean_json(s3, file_stream, bucket_name, s3_key):
-    # Convert byte stream to StringIO for text manipulation
-    str_io = io.StringIO(file_stream.read().decode('utf-8'))
-    output_io = io.StringIO()
-
-    capture = False
-    buffer = []  # to handle the removal of the last line
-    for line in str_io:
-        if '"results": [' in line:
-            line = line.replace('"results": [', '[')  # Start capturing after replacing the line
-            capture = True
-        if capture:
-            buffer.append(line)
-
-    # Remove the last line from buffer before writing to output
-    if buffer:
-        buffer.pop()  # Remove the last line
-
-    # Write the modified content to output_io
-    for line in buffer:
-        output_io.write(line)
-
-    # Move back to the start of the StringIO buffer
-    output_io.seek(0)
-
-    # Upload the cleaned data to S3
-    s3.upload_fileobj(io.BytesIO(output_io.getvalue().encode()), bucket_name, s3_key)
-    output_io.close()
-    str_io.close()
-    print(f"Cleaned file uploaded to s3://{bucket_name}/{s3_key}")
-
-
-def get_aws_auth():
-    credentials = boto3.Session().get_credentials()
-    return AWS4Auth(credentials.access_key, credentials.secret_key, REGION, 'es', session_token=credentials.token)
-
-
-def get_es_client(es_endpoint):
+def load_data_to_es(es_endpoint, spark_df, es_index):
     awsauth = get_aws_auth()
-    return Elasticsearch(
+    es_client = Elasticsearch(
         [es_endpoint],
         http_auth=awsauth,
         use_ssl=True,
@@ -183,47 +40,13 @@ def get_es_client(es_endpoint):
         connection_class=RequestsHttpConnection
     )
 
-
-def manage_es_alias(es, es_index, es_alias):
-    if es.indices.exists_alias(name=es_alias):
-        current_indices = list(es.indices.get_alias(name=es_alias).keys())
-        old_index = current_indices[0] if current_indices else None
-    else:
-        old_index = None
-    if old_index:
-        es.indices.update_aliases({
-            "actions": [
-                {"remove": {"index": old_index, "alias": es_alias}},
-                {"add": {"index": es_index, "alias": es_alias}}
-            ]
-        })
-        es.indices.delete(index=old_index)
-    else:
-        es.indices.put_alias(index=es_index, name=es_alias)
-
-
-def load_data_to_es(es_endpoint, spark_df, es_index):
-    es = get_es_client(es_endpoint)
-    spark_df.write.format("org.elasticsearch.spark.sql").option("es.resource", f'{es_index}/_doc').option("es.nodes", es_endpoint).option("es.nodes.wan.only", "true").save()
-    manage_es_alias(es, es_index, 'open_fda_ndc_data')
-
-
-def move_s3_files_to_archive(s3, bucket, frm_prefix, to_prefix):
-    response = s3.list_objects_v2(Bucket=bucket, Prefix=frm_prefix)
-    if 'Contents' in response:
-        for file in response['Contents']:
-            file_key = file['Key']
-            if file_key.endswith('/'):
-                continue
-            filename = file_key.split('/')[-1]
-            file_base, file_ext = filename.rsplit('.', 1)
-            dtm = datetime.now(NY_TZ).strftime("%Y%m%d%H%M%S")
-            new_filename = f"{file_base}_{dtm}.{file_ext}"
-            arc_key = f"{to_prefix}{new_filename}"
-            s3.copy_object(Bucket=bucket, CopySource={'Bucket': bucket, 'Key': file_key}, Key=arc_key)
-            s3.delete_object(Bucket=bucket, Key=file_key)
-            print(f'Moved {file_key} to {arc_key}')
-
+    # Calculating number of partitions
+    number_of_partitions = max(1, int(spark_df.count() / 2000))
+    spark_df = spark_df.repartition(number_of_partitions)
+    
+    # Applying foreachPartition to send data to Elasticsearch
+    es_bulk_insert_func = partial(es_bulk_insert, es_client=es_client, es_index=es_index)
+    spark_df.foreachPartition(es_bulk_insert_func)
 
 def main():
     args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'src_url', 'es_endpoint'])
@@ -234,21 +57,10 @@ def main():
     job = Job(glueContext)
     job.init(args['JOB_NAME'], args)
 
-    logger = setup_logging(args['JOB_NAME'])
     s3 = boto3.client('s3')
-    cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
-
-    # # insert starting job entry into the aws glue job log table.
-    # job_start_time = log_job_start(cdm_creds, logger, args['JOB_NAME'], 'started')
-
-    logger.info("Start: Archive S3 files")
-    move_s3_files_to_archive(s3, args['kw_s3bucket'], 'open_fda_ndc/latest/', 'open_fda_ndc/archive/')
-    logger.info("End: Archive S3 files")
-
     ndc_url = requests.get(args['src_url']).json()['results']['drug']['ndc']['partitions'][0]['file']
-    print(ndc_url)
-
     s3_json_path = download_and_extract_zip(s3, ndc_url, args['kw_s3bucket'], 'open_fda_ndc/latest/')
+    
     if s3_json_path:
         spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
         spark_df = spark_df.withColumn("packaging", explode_outer("packaging"))
@@ -258,8 +70,6 @@ def main():
             col("product_type"),
             col("application_number"),
             col("brand_name"),
-            col("brand_name_base"),
-            col("brand_name_suffix"),
             col("generic_name"),
             col("dosage_form"),
             col("labeler_name"),
@@ -272,34 +82,13 @@ def main():
             col("pharm_class"),
             col("route"),
             col("spl_id"),
-            # Packaging details
-            col("packaging.description").alias("packaging_description"),
-            col("packaging.marketing_end_date").alias("packaging_marketing_end_date"),
-            col("packaging.marketing_start_date").alias("packaging_marketing_start_date"),
-            col("packaging.package_ndc").alias("package_ndc"),
-            col("packaging.sample").alias("sample"),
-            # Active ingredients details
+            to_json(col("packaging")).alias("packaging_details"),
             to_json(col("active_ingredients")).alias("active_ingredients"),
-            # concat_ws(", ", col("active_ingredients.name")).alias("active_ingredient_name"),
-            # concat_ws(", ", col("active_ingredients.strength")).alias("active_ingredient_strength"),
             to_json(col("openfda")).alias("openfda")
-        ).take(1500)
-        src_cnt = flattened_df.count()
-        datetime_NY = datetime.now(NY_TZ)
-        flattened_df = flattened_df.filter(flattened_df.finished == 'true').withColumn("load_datetime", unix_timestamp(lit(datetime_NY.strftime("%Y-%m-%d %H:%M:%S")),'yyyy-MM-dd HH:mm:ss').cast("timestamp"))
-        flattened_df.printSchema()
-        flattened_df.show(n=5, truncate=False)
-        ins_cnt = flattened_df.count()
-        print(f"flattened_df_cnt: {ins_cnt}")
-
-        es_index = 'ndc_data_' + datetime.now(NY_TZ).strftime('%Y%m%d%H%M%S')
-        load_data_to_es(args['es_endpoint'], spark_df, es_index)
-        print("Data loaded into Elasticsearch successfully.")
-        spark_df.show(truncate=False)
-        print(f'count: {spark_df.count()}')
-
-
-
+        ).filter(col("finished") == 'true').withColumn("load_datetime", current_date())
+        
+        es_index = 'ndc_data_' + datetime.now().strftime('%Y%m%d%H%M%S')
+        load_data_to_es(args['es_endpoint'], flattened_df, es_index)
 
     job.commit()
 
