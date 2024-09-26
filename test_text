@@ -1,96 +1,59 @@
-import sys
-from awsglue.transforms import *
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql.functions import lit, unix_timestamp, explode_outer, col, concat_ws, to_json, struct, current_date
-from pyspark.sql import SparkSession
-import boto3
-from datetime import datetime
-import requests
-import logging
-import zipfile
-import io
-import pytz
-from elasticsearch import Elasticsearch, RequestsHttpConnection, helpers
-from requests_aws4auth import AWS4Auth
-import psycopg2
-import re
-import json
-from functools import partial
+import os
+from smbprotocol.connection import Connection, Dialects
+from smbprotocol.session import Session
+from smbprotocol.open import Open, CreateDisposition, FileAttributes, CreateOptions
 
-sys.argv += ['--JOB_NAME', 'your_job_name', '--kw_s3bucket', 'your_bucket', '--src_url', 'https://api.fda.gov/download.json', '--es_endpoint', 'https://your-es-endpoint.us-east-1.es.amazonaws.com']
+# SMB server details
+host = "my-host-1"
+username = "user_sam"
+password = "pass_sam"
+share_name = "folder1"
+directory = "folder2"
 
-def es_bulk_insert(partition, es_client, es_index):
-    actions = [
-        {"_index": es_index, "_type": "_doc", "_source": row.asDict(recursive=True)}
-        for row in partition
-    ]
-    if actions:
-        helpers.bulk(es_client, actions)
+# Establish connection to the SMB server
+connection = Connection(uuid.uuid4(), host, port=445)
+connection.connect(Dialects.SMB_3_1_1)
+session = Session(connection, username, password)
+session.connect()
 
-def load_data_to_es(es_endpoint, spark_df, es_index):
-    awsauth = get_aws_auth()
-    es_client = Elasticsearch(
-        [es_endpoint],
-        http_auth=awsauth,
-        use_ssl=True,
-        verify_certs=True,
-        connection_class=RequestsHttpConnection
-    )
+# Connect to the share
+share = Open(session, share_name)
+share.create(
+    CreateDisposition.FILE_OPEN_IF,
+    FileAttributes.FILE_ATTRIBUTE_DIRECTORY,
+    CreateOptions.FILE_DIRECTORY_FILE
+)
 
-    # Calculating number of partitions
-    number_of_partitions = max(1, int(spark_df.count() / 2000))
-    spark_df = spark_df.repartition(number_of_partitions)
-    
-    # Applying foreachPartition to send data to Elasticsearch
-    es_bulk_insert_func = partial(es_bulk_insert, es_client=es_client, es_index=es_index)
-    spark_df.foreachPartition(es_bulk_insert_func)
+# Navigate to the desired directory
+folder = Open(share, directory)
+folder.create(
+    CreateDisposition.FILE_OPEN_IF,
+    FileAttributes.FILE_ATTRIBUTE_DIRECTORY,
+    CreateOptions.FILE_DIRECTORY_FILE
+)
 
-def main():
-    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'src_url', 'es_endpoint'])
+# List and filter files
+files = folder.list_directory()
+for file_info in files:
+    file_name = file_info['file_name'].decode()
+    print("Found file:", file_name)
+    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
+        print("Downloading:", file_name)
+        # Open the file for reading
+        file_to_download = Open(folder, file_name)
+        file_to_download.create(
+            CreateDisposition.FILE_OPEN,
+            FileAttributes.FILE_ATTRIBUTE_NORMAL,
+            CreateOptions.FILE_NON_DIRECTORY_FILE
+        )
+        # Read and save the file locally
+        file_data = file_to_download.read()
+        with open(file_name, 'wb') as f:
+            f.write(file_data)
 
-    sc = SparkContext()
-    glueContext = GlueContext(sc)
-    spark = SparkSession.builder.config("spark.jars","/usr/lib/jars/elasticsearch-hadoop-7.10.0.jar").getOrCreate()
-    job = Job(glueContext)
-    job.init(args['JOB_NAME'], args)
-
-    s3 = boto3.client('s3')
-    ndc_url = requests.get(args['src_url']).json()['results']['drug']['ndc']['partitions'][0]['file']
-    s3_json_path = download_and_extract_zip(s3, ndc_url, args['kw_s3bucket'], 'open_fda_ndc/latest/')
-    
-    if s3_json_path:
-        spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
-        spark_df = spark_df.withColumn("packaging", explode_outer("packaging"))
-        flattened_df = spark_df.select(
-            col("product_id"),
-            col("product_ndc"),
-            col("product_type"),
-            col("application_number"),
-            col("brand_name"),
-            col("generic_name"),
-            col("dosage_form"),
-            col("labeler_name"),
-            col("marketing_category"),
-            col("dea_schedule"),
-            col("finished"),
-            col("marketing_start_date"),
-            col("marketing_end_date"),
-            col("listing_expiration_date"),
-            col("pharm_class"),
-            col("route"),
-            col("spl_id"),
-            to_json(col("packaging")).alias("packaging_details"),
-            to_json(col("active_ingredients")).alias("active_ingredients"),
-            to_json(col("openfda")).alias("openfda")
-        ).filter(col("finished") == 'true').withColumn("load_datetime", current_date())
-        
-        es_index = 'ndc_data_' + datetime.now().strftime('%Y%m%d%H%M%S')
-        load_data_to_es(args['es_endpoint'], flattened_df, es_index)
-
-    job.commit()
-
-if __name__ == "__main__":
-    main()
+# Clean up resources
+file_to_download.close()
+folder.close()
+share.close()
+session.disconnect()
+connection.disconnect()
