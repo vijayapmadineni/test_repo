@@ -1,249 +1,42 @@
-import os
-from smbprotocol.connection import Connection, Dialects
-from smbprotocol.session import Session
-from smbprotocol.open import Open, CreateDisposition, FileAttributes, CreateOptions
-
-# SMB server details
-host = "my-host-1"
-username = "user_sam"
-password = "pass_sam"
-share_name = "folder1"
-directory = "folder2"
-
-# Establish connection to the SMB server
-connection = Connection(uuid.uuid4(), host, port=445)
-connection.connect(Dialects.SMB_3_1_1)
-session = Session(connection, username, password)
-session.connect()
-
-# Connect to the share
-share = Open(session, share_name)
-share.create(
-    CreateDisposition.FILE_OPEN_IF,
-    FileAttributes.FILE_ATTRIBUTE_DIRECTORY,
-    CreateOptions.FILE_DIRECTORY_FILE
-)
-
-# Navigate to the desired directory
-folder = Open(share, directory)
-folder.create(
-    CreateDisposition.FILE_OPEN_IF,
-    FileAttributes.FILE_ATTRIBUTE_DIRECTORY,
-    CreateOptions.FILE_DIRECTORY_FILE
-)
-
-# List and filter files
-files = folder.list_directory()
-for file_info in files:
-    file_name = file_info['file_name'].decode()
-    print("Found file:", file_name)
-    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
-        print("Downloading:", file_name)
-        # Open the file for reading
-        file_to_download = Open(folder, file_name)
-        file_to_download.create(
-            CreateDisposition.FILE_OPEN,
-            FileAttributes.FILE_ATTRIBUTE_NORMAL,
-            CreateOptions.FILE_NON_DIRECTORY_FILE
-        )
-        # Read and save the file locally
-        file_data = file_to_download.read()
-        with open(file_name, 'wb') as f:
-            f.write(file_data)
-
-# Clean up resources
-file_to_download.close()
-folder.close()
-share.close()
-session.disconnect()
-connection.disconnect()
-
-###############################################################################################################################################
-import os
-import uuid
-from smbprotocol.connection import Connection, Dialects
-from smbprotocol.session import Session
-from smbprotocol.tree import TreeConnect
-from smbprotocol.open import Open, CreateDisposition, CreateOptions, FileAccess, ShareAccess
-from smbprotocol.file_info import FileAttributes
-
-# Connection parameters
-hostname = "my-host-1"
-username = "user_sam"
-password = "pass_sam"
-share_name = "share"  # Adjust the share name to your SMB share
-directory = "\\folder1\\folder2"  # Use the correct path
-
-# Establish a connection
-connection = Connection(uuid.uuid4(), hostname, port=445)
-connection.connect(Dialects.SMB_3_1_1)
-
-session = Session(connection, username, password)
-session.connect()
-
-tree = TreeConnect(session, f"\\\\{hostname}\\{share_name}")
-tree.connect()
-
-# Open the directory
-directory_path = Open(tree, directory, create_options=CreateOptions.FILE_DIRECTORY_FILE,
-                      desired_access=FileAccess.FILE_LIST_DIRECTORY, share_access=ShareAccess.FILE_SHARE_READ,
-                      create_disposition=CreateDisposition.FILE_OPEN, file_attributes=FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
-directory_path.create()
-
-# List all files and download specific files
-files = directory_path.query_directory("*", file_information_class="FileDirectoryInformation")
-for file_info in files:
-    file_name = file_info.file_name
-    print("Found file:", file_name)
-    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
-        print("Downloading:", file_name)
-        file_to_download = Open(tree, os.path.join(directory, file_name), desired_access=FileAccess.FILE_READ_DATA)
-        file_to_download.create()
-        file_contents = file_to_download.read()
-        with open(file_name, 'wb') as f:
-            f.write(file_contents)
-        file_to_download.close()
-
-# Clean up
-directory_path.close()
-tree.disconnect()
-session.logoff()
-connection.disconnect()
-
-###############################################################################################################################################
-import os
-import uuid
-from smbprotocol.connection import Connection, Dialects
-from smbprotocol.session import Session
-from smbprotocol.tree import TreeConnect
-from smbprotocol.open import Open, CreateDisposition, CreateOptions
-from smbprotocol.file_info import FileAttributes
-
-# Connection parameters
-hostname = "my-host-1"
-username = "user_sam"
-password = "pass_sam"
-share_name = "share"  # Update this to your SMB share name
-directory = "\\folder1\\folder2"  # Use the correct path from the root of the share
-
-# Establish a connection
-connection = Connection(uuid.uuid4(), hostname, port=445)
-connection.connect(Dialects.SMB_3_1_1)
-
-session = Session(connection, username, password)
-session.connect()
-
-tree = TreeConnect(session, f"\\\\{hostname}\\{share_name}")
-tree.connect()
-
-# Open the directory
-directory_path = Open(tree, directory, create_options=CreateOptions.FILE_DIRECTORY_FILE,
-                      desired_access=0x00100000,  # GENERIC_READ
-                      share_access=0x00000001,   # FILE_SHARE_READ
-                      create_disposition=CreateDisposition.FILE_OPEN,
-                      file_attributes=FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
-directory_path.create()
-
-# List all files and download specific files
-files = directory_path.query_directory("*", file_information_class="FileDirectoryInformation")
-for file_info in files:
-    file_name = file_info.file_name
-    print("Found file:", file_name)
-    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
-        print("Downloading:", file_name)
-        file_to_download = Open(tree, os.path.join(directory, file_name),
-                                desired_access=0x00100000,  # GENERIC_READ
-                                share_access=0x00000001,   # FILE_SHARE_READ
-                                create_disposition=CreateDisposition.FILE_OPEN)
-        file_to_download.create()
-        file_contents = file_to_download.read(size=file_to_download.end_of_file)
-        with open(file_name, 'wb') as f:
-            f.write(file_contents)
-        file_to_download.close()
-
-# Clean up
-directory_path.close()
-tree.disconnect()
-session.logoff()
-connection.disconnect()
-
-###############################################################################################################################################
-
-import os
-import uuid
-from smbprotocol.connection import Connection, Dialects
-from smbprotocol.session import Session
-from smbprotocol.tree import TreeConnect
-from smbprotocol.open import Open, CreateDisposition
-
-# Connection parameters
-hostname = "my-host-1"
-username = "user_sam"
-password = "pass_sam"
-share_name = "share"  # Update this to your SMB share name
-directory = "\\folder1\\folder2"  # Use the correct path from the root of the share
-
-# Establish a connection
-connection = Connection(uuid.uuid4(), hostname, port=445)
-connection.connect(Dialects.SMB_3_1_1)
-
-session = Session(connection, username, password)
-session.connect()
-
-tree = TreeConnect(session, f"\\\\{hostname}\\{share_name}")
-tree.connect()
-
-# Open the directory
-directory_path = Open(tree, directory)
-directory_path.create(CreateDisposition.FILE_OPEN)
-
-# List all files and download specific files
-files = directory_path.query_directory("*")
-for file_info in files:
-    file_name = file_info.filename
-    print("Found file:", file_name)
-    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
-        print("Downloading:", file_name)
-        file_to_download = Open(tree, os.path.join(directory, file_name))
-        file_to_download.create(CreateDisposition.FILE_OPEN)
-        file_contents = file_to_download.read()
-        with open(file_name, 'wb') as f:
-            f.write(file_contents)
-        file_to_download.close()
-
-# Clean up
-directory_path.close()
-tree.disconnect()
-session.logoff()
-connection.disconnect()
-
-###############################################################################################################################################
+import boto3
 from smb.SMBConnection import SMBConnection
 
-# Connection parameters
-username = 'user_sam'
-password = 'pass_sam'
-client_machine_name = 'local_machine'  # Can be any name
-server_name = 'my-host-1'  # NetBIOS name or IP address of the SMB/CIFS server
-server_ip = '192.168.x.x'  # IP address of the server
+def main():
+    # SMB Connection parameters
+    username = 'user_sam'
+    password = 'pass_sam'
+    client_machine_name = 'my-glue-job'  # Can be any name
+    server_name = 'my-host-1'  # NetBIOS name or IP address of the SMB/CIFS server
+    server_ip = '192.168.x.x'  # IP address of the server
+    
+    # Connect to the SMB server
+    conn = SMBConnection(username, password, client_machine_name, server_name, use_ntlm_v2=True)
+    assert conn.connect(server_ip, 139)  # or 445, depends on your server config
+    
+    # S3 client setup
+    s3 = boto3.client('s3')
+    bucket_name = 'my-s3bucket'
+    s3_directory = 'folder1/folder2/'
+    
+    # Specify the share and the directory
+    share_name = 'share'
+    directory = '/folder1/folder2'  # Adjust the path as necessary
+    
+    # List files and download specific files
+    files = conn.listPath(share_name, directory)
+    for file in files:
+        file_name = file.filename
+        if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
+            print(f"Downloading and uploading: {file_name}")
+            with open('/tmp/' + file_name, 'wb') as file_obj:
+                conn.retrieveFile(share_name, directory + '/' + file_name, file_obj)
+                
+            # Upload the file to S3
+            with open('/tmp/' + file_name, 'rb') as file_obj:
+                s3.upload_fileobj(file_obj, bucket_name, s3_directory + file_name)
+    
+    # Close the SMB connection
+    conn.close()
 
-# Connect to the SMB server
-conn = SMBConnection(username, password, client_machine_name, server_name, use_ntlm_v2=True)
-assert conn.connect(server_ip, 139)  # or 445 depending on your server configuration
-
-# Specify the share and the directory
-share_name = 'share'
-directory = '/folder1/folder2'  # Adjust the path as necessary
-
-# List files and download specific files
-files = conn.listPath(share_name, directory)
-for file in files:
-    file_name = file.filename
-    print("Found file:", file_name)
-    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
-        print("Downloading:", file_name)
-        with open(file_name, 'wb') as file_obj:
-            conn.retrieveFile(share_name, directory + '/' + file_name, file_obj)
-
-# Close the connection
-conn.close()
+if __name__ == "__main__":
+    main()
