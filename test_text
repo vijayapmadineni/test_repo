@@ -59,35 +59,55 @@ session.disconnect()
 connection.disconnect()
 
 ###############################################################################################################################################
+import os
 import uuid
 from smbprotocol.connection import Connection, Dialects
 from smbprotocol.session import Session
 from smbprotocol.tree import TreeConnect
-from smbprotocol.file import CreateDisposition, FileAttributes, Open
+from smbprotocol.open import Open, CreateDisposition, CreateOptions, FileAccess, ShareAccess
+from smbprotocol.file_info import FileAttributes
 
-# SMB server details
-host = "my-host-1"
-share_name = "\\folder1\\folder2"  # Use the full path from the root to your specific folder
+# Connection parameters
+hostname = "my-host-1"
 username = "user_sam"
 password = "pass_sam"
-domain = "DOMAIN"  # Update with your domain if needed, or use ""
+share_name = "share"  # Adjust the share name to your SMB share
+directory = "\\folder1\\folder2"  # Use the correct path
 
-# Establish connection to the SMB server
-connection = Connection(uuid.uuid4(), host, 445)
+# Establish a connection
+connection = Connection(uuid.uuid4(), hostname, port=445)
 connection.connect(Dialects.SMB_3_1_1)
 
-session = Session(connection, username, password, domain)
+session = Session(connection, username, password)
 session.connect()
 
-tree = TreeConnect(session, share_name)
+tree = TreeConnect(session, f"\\\\{hostname}\\{share_name}")
 tree.connect()
 
-# Now you can open files, list directories, etc., within the 'tree' object context
-# Example of listing a directory
-directory = Open(tree, share_name, create_options=CreateOptions.FILE_DIRECTORY_FILE,
-                 desired_access=FileAccess.FILE_READ_DATA, share_access=ShareAccess.FILE_SHARE_READ,
-                 create_disposition=CreateDisposition.FILE_OPEN, file_attributes=FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
-directory.create()
+# Open the directory
+directory_path = Open(tree, directory, create_options=CreateOptions.FILE_DIRECTORY_FILE,
+                      desired_access=FileAccess.FILE_LIST_DIRECTORY, share_access=ShareAccess.FILE_SHARE_READ,
+                      create_disposition=CreateDisposition.FILE_OPEN, file_attributes=FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
+directory_path.create()
 
-# Here you would continue with listing files, filtering, and downloading them.
+# List all files and download specific files
+files = directory_path.query_directory("*", file_information_class="FileDirectoryInformation")
+for file_info in files:
+    file_name = file_info.file_name
+    print("Found file:", file_name)
+    if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
+        print("Downloading:", file_name)
+        file_to_download = Open(tree, os.path.join(directory, file_name), desired_access=FileAccess.FILE_READ_DATA)
+        file_to_download.create()
+        file_contents = file_to_download.read()
+        with open(file_name, 'wb') as f:
+            f.write(file_contents)
+        file_to_download.close()
+
+# Clean up
+directory_path.close()
+tree.disconnect()
+session.logoff()
+connection.disconnect()
+
 
