@@ -57,3 +57,37 @@ folder.close()
 share.close()
 session.disconnect()
 connection.disconnect()
+
+###############################################################################################################################################
+import uuid
+from smbprotocol.connection import Connection, Dialects
+from smbprotocol.session import Session
+from smbprotocol.tree import TreeConnect
+from smbprotocol.file import CreateDisposition, FileAttributes, Open
+
+# SMB server details
+host = "my-host-1"
+share_name = "\\folder1\\folder2"  # Use the full path from the root to your specific folder
+username = "user_sam"
+password = "pass_sam"
+domain = "DOMAIN"  # Update with your domain if needed, or use ""
+
+# Establish connection to the SMB server
+connection = Connection(uuid.uuid4(), host, 445)
+connection.connect(Dialects.SMB_3_1_1)
+
+session = Session(connection, username, password, domain)
+session.connect()
+
+tree = TreeConnect(session, share_name)
+tree.connect()
+
+# Now you can open files, list directories, etc., within the 'tree' object context
+# Example of listing a directory
+directory = Open(tree, share_name, create_options=CreateOptions.FILE_DIRECTORY_FILE,
+                 desired_access=FileAccess.FILE_READ_DATA, share_access=ShareAccess.FILE_SHARE_READ,
+                 create_disposition=CreateDisposition.FILE_OPEN, file_attributes=FileAttributes.FILE_ATTRIBUTE_DIRECTORY)
+directory.create()
+
+# Here you would continue with listing files, filtering, and downloading them.
+
