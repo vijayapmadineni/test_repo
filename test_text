@@ -1,42 +1,22 @@
-import boto3
-from smb.SMBConnection import SMBConnection
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  MyS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: "mys3bucket"
+      LifecycleConfiguration:
+        Rules:
+          - Id: "DeleteOldFilesFolder1"
+            Prefix: "mys3folder/mys3folder2/"  # Rule for first folder
+            Status: "Enabled"
+            ExpirationInDays: 60  # Automatically delete files older than 60 days in this folder
 
-def main():
-    # SMB Connection parameters
-    username = 'user_sam'
-    password = 'pass_sam'
-    client_machine_name = 'my-glue-job'  # Can be any name
-    server_name = 'my-host-1'  # NetBIOS name or IP address of the SMB/CIFS server
-    server_ip = '192.168.x.x'  # IP address of the server
-    
-    # Connect to the SMB server
-    conn = SMBConnection(username, password, client_machine_name, server_name, use_ntlm_v2=True)
-    assert conn.connect(server_ip, 139)  # or 445, depends on your server config
-    
-    # S3 client setup
-    s3 = boto3.client('s3')
-    bucket_name = 'my-s3bucket'
-    s3_directory = 'folder1/folder2/'
-    
-    # Specify the share and the directory
-    share_name = 'share'
-    directory = '/folder1/folder2'  # Adjust the path as necessary
-    
-    # List files and download specific files
-    files = conn.listPath(share_name, directory)
-    for file in files:
-        file_name = file.filename
-        if file_name.startswith(("aaa_user", "bbb_user")) and file_name.endswith(".csv"):
-            print(f"Downloading and uploading: {file_name}")
-            with open('/tmp/' + file_name, 'wb') as file_obj:
-                conn.retrieveFile(share_name, directory + '/' + file_name, file_obj)
-                
-            # Upload the file to S3
-            with open('/tmp/' + file_name, 'rb') as file_obj:
-                s3.upload_fileobj(file_obj, bucket_name, s3_directory + file_name)
-    
-    # Close the SMB connection
-    conn.close()
+          - Id: "DeleteOldFilesFolder2"
+            Prefix: "anotherfolder/subfolder/"  # Rule for second folder
+            Status: "Enabled"
+            ExpirationInDays: 90  # Automatically delete files older than 90 days in this folder
 
-if __name__ == "__main__":
-    main()
+          - Id: "DeleteOldFilesFolder3"
+            Prefix: "thirdfolder/"  # Rule for third folder
+            Status: "Enabled"
+            ExpirationInDays: 30  # Automatically delete files older than 30 days in this folder
