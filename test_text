@@ -1,22 +1,88 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Resources:
-  MyS3Bucket:
-    Type: "AWS::S3::Bucket"
+  # IAM role for the Lambda function to access S3
+  S3LifecycleLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "S3AccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutBucketLifecycleConfiguration"
+                  - "s3:GetBucketLifecycleConfiguration"
+                Resource: "arn:aws:s3:::mys3bucket"
+
+  # Lambda function to set the lifecycle policy
+  S3LifecycleLambdaFunction:
+    Type: "AWS::Lambda::Function"
     Properties:
-      BucketName: "mys3bucket"
-      LifecycleConfiguration:
-        Rules:
-          - Id: "DeleteOldFilesFolder1"
-            Prefix: "mys3folder/mys3folder2/"  # Rule for first folder
-            Status: "Enabled"
-            ExpirationInDays: 60  # Automatically delete files older than 60 days in this folder
+      FunctionName: "S3LifecycleFunction"
+      Handler: "index.lambda_handler"
+      Role: !GetAtt S3LifecycleLambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
 
-          - Id: "DeleteOldFilesFolder2"
-            Prefix: "anotherfolder/subfolder/"  # Rule for second folder
-            Status: "Enabled"
-            ExpirationInDays: 90  # Automatically delete files older than 90 days in this folder
+          def lambda_handler(event, context):
+              s3 = boto3.client('s3')
+              bucket_name = event['ResourceProperties']['BucketName']
 
-          - Id: "DeleteOldFilesFolder3"
-            Prefix: "thirdfolder/"  # Rule for third folder
-            Status: "Enabled"
-            ExpirationInDays: 30  # Automatically delete files older than 30 days in this folder
+              # Define the lifecycle configuration rules
+              lifecycle_configuration = {
+                  'Rules': [
+                      {
+                          'ID': 'DeleteOldFilesPrefix1',
+                          'Status': 'Enabled',
+                          'Prefix': 'mys3folder/mys3folder2/',
+                          'Expiration': {'Days': 60}
+                      },
+                      {
+                          'ID': 'DeleteOldFilesPrefix2',
+                          'Status': 'Enabled',
+                          'Prefix': 'anotherfolder/subfolder/',
+                          'Expiration': {'Days': 90}
+                      },
+                      {
+                          'ID': 'DeleteOldFilesPrefix3',
+                          'Status': 'Enabled',
+                          'Prefix': 'thirdfolder/',
+                          'Expiration': {'Days': 30}
+                      }
+                  ]
+              }
+
+              # Put the lifecycle configuration for the specified bucket
+              s3.put_bucket_lifecycle_configuration(
+                  Bucket=bucket_name,
+                  LifecycleConfiguration=lifecycle_configuration
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Lifecycle configuration applied successfully!')
+              }
+      Runtime: "python3.9"
+      Timeout: 300  # 5 minutes
+
+  # Custom Resource to trigger the Lambda function
+  S3LifecycleCustomResource:
+    Type: "Custom::S3Lifecycle"
+    Properties:
+      ServiceToken: !GetAtt S3LifecycleLambdaFunction.Arn
+      BucketName: "mys3bucket"  # The name of your existing bucket
+
+Outputs:
+  S3BucketName:
+    Description: "S3 bucket that the lifecycle policy is applied to."
+    Value: "mys3bucket"
