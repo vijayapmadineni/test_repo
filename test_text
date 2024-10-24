@@ -1,27 +1,49 @@
-Documentation for AWS Glue Job: NDC Data Processing
-Overview
-This AWS Glue job is designed to extract National Drug Code (NDC) data from the FDA's public API, process the data by flattening it, and load the results into both an Elasticsearch index and a PostgreSQL table for further analysis and querying.
-
-Steps Involved:
-Extract NDC URL from the FDA API
-
-The job begins by fetching the JSON file from the FDA API endpoint: https://api.fda.gov/download.json.
-In this JSON file, locate the ndc item, which contains the URL needed to download the National Drug Code data.
-Download and Extract NDC Data
-
-Using the URL extracted from the JSON, the job downloads the corresponding ZIP file containing NDC data.
-After downloading, the ZIP file is extracted to retrieve the raw data, typically in CSV format.
-Data Flattening and Filtering
-
-The raw data is processed and flattened based on the packaging information, specifically focusing on NDC codes.
-During this process, records where the finished attribute is set to false are filtered out, ensuring that only records marked as finished are kept for further processing.
-Load Data into Elasticsearch (ndc_index)
-
-Once the data is processed and flattened, it is loaded into an Elasticsearch index named ndc_index. This allows for fast and flexible querying of the NDC data.
-Load Data into PostgreSQL (schema.table1)
-
-In addition to Elasticsearch, the processed NDC data is also loaded into a PostgreSQL database table. The table schema is defined as schema.table1, where the cleaned and filtered data is stored for relational database queries and analysis.
-Output
-Elasticsearch: The data is loaded into the ndc_index for fast search capabilities.
-PostgreSQL: Data is stored in schema.table1 for traditional database queries and reporting.
-This Glue job ensures that the most up-to-date NDC data is extracted, processed, and stored in both Elasticsearch and PostgreSQL for further use across various applications.
+Select
+fpld.hf_member_num_cd
+,fpld.hf_customer_master_id_cd
+, cqm.cq_measure_cd
+, cqm.cq_measure_sub_measure_cd
+, cqm.cq_measure_sub_measure_dscr
+, mp.cq_measure_year
+, fpld.cq_project_id_cd
+, fpld.cq_numerator_cnt  
+, fpld.cq_eligible_population_cnt
+, pr.company_cd
+, fpld.plan_num_cd
+, pr.cq_product_nm
+, fpld.coverage_effective_dt
+, fpld.coverage_expiration_dt
+FROM pub_cq.table1 fpld
+JOIN pub_cq.table2 mp
+  ON fpld.cq_measure_period_key= mp.cq_measure_period_key
+JOIN pub_cq.table3 cqm  
+  ON fpld.cq_measure_key= cqm.cq_measure_key
+JOIN pub_cq.table4 pr
+  ON fpld.cq_product_key  = pr.cq_product_key  
+WHERE 1=1
+and fpld.cq_eligible_population_cnt = '1' 
+and fpld.dm_audit_record_active_flg = true
+and cqm.cq_measure_cd = 'CCSE'
+and fpld.cq_project_id_cd = (select cq_project_id_cd from rpt_cq.mv_latest_cq_project_id_cd mlcpic  
+where mlcpic.cq_period_tp_dscr = 'OutreachNew'
+and mlcpic.lastest_period_tp_project_flg = true)
+and cq_numerator_cnt = '0'
+and pr.cq_product_nm in ('Essential Plan')
+and fpld.hf_member_num_cd in (Select
+fpld.hf_member_num_cd   
+FROM pub_cq.table1 fpld
+JOIN pub_cq.table2 mp  
+  ON fpld.cq_measure_period_key= mp.cq_measure_period_key
+JOIN pub_cq.table3 cqm  
+  ON fpld.cq_measure_key= cqm.cq_measure_key
+JOIN pub_cq.table4 pr
+  ON fpld.cq_product_key  = pr.cq_product_key  
+WHERE 1=1
+and fpld.cq_eligible_population_cnt = '1'  
+and fpld.dm_audit_record_active_flg = true
+and cqm.cq_measure_cd = 'BCSE'
+and fpld.cq_project_id_cd = (select cq_project_id_cd from rpt_cq.mv_latest_cq_project_id_cd mlcpic  
+where mlcpic.cq_period_tp_dscr = 'OutreachNew'
+and mlcpic.lastest_period_tp_project_flg = true)
+and cq_numerator_cnt = '0'
+and pr.cq_product_nm in ('Essential Plan') )
