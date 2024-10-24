@@ -1,49 +1,45 @@
-Select
-fpld.hf_member_num_cd
-,fpld.hf_customer_master_id_cd
-, cqm.cq_measure_cd
-, cqm.cq_measure_sub_measure_cd
-, cqm.cq_measure_sub_measure_dscr
-, mp.cq_measure_year
-, fpld.cq_project_id_cd
-, fpld.cq_numerator_cnt  
-, fpld.cq_eligible_population_cnt
-, pr.company_cd
-, fpld.plan_num_cd
-, pr.cq_product_nm
-, fpld.coverage_effective_dt
-, fpld.coverage_expiration_dt
+WITH latest_project AS (
+  SELECT cq_project_id_cd 
+  FROM rpt_cq.mv_latest_cq_project_id_cd 
+  WHERE cq_period_tp_dscr = 'OutreachNew' 
+    AND lastest_period_tp_project_flg = true
+),
+matching_members AS (
+  SELECT fpld.hf_member_num_cd
+  FROM pub_cq.table1 fpld
+  JOIN pub_cq.table2 mp ON fpld.cq_measure_period_key = mp.cq_measure_period_key
+  JOIN pub_cq.table3 cqm ON fpld.cq_measure_key = cqm.cq_measure_key
+  JOIN pub_cq.table4 pr ON fpld.cq_product_key = pr.cq_product_key
+  WHERE fpld.cq_eligible_population_cnt = '1'
+    AND fpld.dm_audit_record_active_flg = true
+    AND cqm.cq_measure_cd = 'BCSE'
+    AND fpld.cq_project_id_cd IN (SELECT cq_project_id_cd FROM latest_project)
+    AND fpld.cq_numerator_cnt = '0'
+    AND pr.cq_product_nm = 'Essential Plan'
+)
+SELECT
+  fpld.hf_member_num_cd,
+  fpld.hf_customer_master_id_cd,
+  cqm.cq_measure_cd,
+  cqm.cq_measure_sub_measure_cd,
+  cqm.cq_measure_sub_measure_dscr,
+  mp.cq_measure_year,
+  fpld.cq_project_id_cd,
+  fpld.cq_numerator_cnt,
+  fpld.cq_eligible_population_cnt,
+  pr.company_cd,
+  fpld.plan_num_cd,
+  pr.cq_product_nm,
+  fpld.coverage_effective_dt,
+  fpld.coverage_expiration_dt
 FROM pub_cq.table1 fpld
-JOIN pub_cq.table2 mp
-  ON fpld.cq_measure_period_key= mp.cq_measure_period_key
-JOIN pub_cq.table3 cqm  
-  ON fpld.cq_measure_key= cqm.cq_measure_key
-JOIN pub_cq.table4 pr
-  ON fpld.cq_product_key  = pr.cq_product_key  
-WHERE 1=1
-and fpld.cq_eligible_population_cnt = '1' 
-and fpld.dm_audit_record_active_flg = true
-and cqm.cq_measure_cd = 'CCSE'
-and fpld.cq_project_id_cd = (select cq_project_id_cd from rpt_cq.mv_latest_cq_project_id_cd mlcpic  
-where mlcpic.cq_period_tp_dscr = 'OutreachNew'
-and mlcpic.lastest_period_tp_project_flg = true)
-and cq_numerator_cnt = '0'
-and pr.cq_product_nm in ('Essential Plan')
-and fpld.hf_member_num_cd in (Select
-fpld.hf_member_num_cd   
-FROM pub_cq.table1 fpld
-JOIN pub_cq.table2 mp  
-  ON fpld.cq_measure_period_key= mp.cq_measure_period_key
-JOIN pub_cq.table3 cqm  
-  ON fpld.cq_measure_key= cqm.cq_measure_key
-JOIN pub_cq.table4 pr
-  ON fpld.cq_product_key  = pr.cq_product_key  
-WHERE 1=1
-and fpld.cq_eligible_population_cnt = '1'  
-and fpld.dm_audit_record_active_flg = true
-and cqm.cq_measure_cd = 'BCSE'
-and fpld.cq_project_id_cd = (select cq_project_id_cd from rpt_cq.mv_latest_cq_project_id_cd mlcpic  
-where mlcpic.cq_period_tp_dscr = 'OutreachNew'
-and mlcpic.lastest_period_tp_project_flg = true)
-and cq_numerator_cnt = '0'
-and pr.cq_product_nm in ('Essential Plan') )
+JOIN pub_cq.table2 mp ON fpld.cq_measure_period_key = mp.cq_measure_period_key
+JOIN pub_cq.table3 cqm ON fpld.cq_measure_key = cqm.cq_measure_key
+JOIN pub_cq.table4 pr ON fpld.cq_product_key = pr.cq_product_key
+WHERE fpld.cq_eligible_population_cnt = '1'
+  AND fpld.dm_audit_record_active_flg = true
+  AND cqm.cq_measure_cd = 'CCSE'
+  AND fpld.cq_project_id_cd IN (SELECT cq_project_id_cd FROM latest_project)
+  AND fpld.cq_numerator_cnt = '0'
+  AND pr.cq_product_nm = 'Essential Plan'
+  AND fpld.hf_member_num_cd IN (SELECT hf_member_num_cd FROM matching_members);
