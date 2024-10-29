@@ -1,57 +1,69 @@
-import boto3
-from smb.SMBConnection import SMBConnection
-import zipfile
-import os
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+import logging
+import uuid
 
-def main():
-    # SMB Connection parameters
-    username = 'user_sam'
-    password = 'pass_sam'
-    client_machine_name = 'my-glue-job'  # Can be any name
-    server_name = 'my-host-1'  # NetBIOS name or IP address of the SMB/CIFS server
-    server_ip = '192.168.x.x'  # IP address of the server
+## @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 's3bucket'])
 
-    # Connect to the SMB server
-    conn = SMBConnection(username, password, client_machine_name, server_name, use_ntlm_v2=True)
-    assert conn.connect(server_ip, 139)  # or 445, depends on your server config
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
 
-    # S3 client setup
-    s3 = boto3.client('s3')
-    bucket_name = 'my-s3bucket'
-    s3_directory = 'folder1/folder2/'
+job_name = args['JOB_NAME']
+logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logger = logging.getLogger(job_name)
+logger.setLevel(logging.INFO)
 
-    # Specify the share and the directory
-    share_name = 'share'
-    directory = '/folder1/folder2'  # Adjust the path as necessary
+s3bucket = args['s3bucket']
+checkpoint_location = 's3://'+ s3bucket + '/Twilio/' + job_name + '/Checkpoint'
+bucket_path = 's3://' + s3bucket + '/Twilio/cde_twilio_stream_flex/'
 
-    # List files and download specific zip files
-    files = conn.listPath(share_name, directory)
-    for file in files:
-        file_name = file.filename
-        if file_name.endswith(".zip"):  # Filter for zip files
-            print(f"Downloading: {file_name}")
-            local_zip_path = '/tmp/' + file_name
-            with open(local_zip_path, 'wb') as file_obj:
-                conn.retrieveFile(share_name, directory + '/' + file_name, file_obj)
-            
-            # Extract the specific CSV file
-            with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
-                # Path of the csv inside the zip
-                csv_path = 'dir_file_path1/dir file_path2_yyy/dir_file_path2/test_final_file.csv'
-                zip_ref.extract(csv_path, '/tmp')
-
-                # Upload the extracted CSV to S3
-                local_csv_path = os.path.join('/tmp', csv_path)
-                print(f"Uploading: {local_csv_path}")
-                with open(local_csv_path, 'rb') as csv_file:
-                    s3.upload_fileobj(csv_file, bucket_name, s3_directory + 'test_final_file.csv')
-
-            # Clean up the extracted files if needed
-            os.remove(local_zip_path)
-            os.remove(local_csv_path)
+global_schema = StructType([ 
+    StructField('specversion',StringType(),True), 
+    StructField('type',StringType(),True), 
+    StructField('source',StringType(),True), 
+    StructField('id', StringType(), True),
+    StructField('dataschema',StringType(),True), 
+    StructField('datacontenttype',StringType(),True), 
+    StructField('time',StringType(),True), 
+    StructField('data', StringType(), True)
+  ])
     
-    # Close the SMB connection
-    conn.close()
 
-if __name__ == "__main__":
-    main()
+def processBatch(data_frame, batchId):
+    logger.info('Start: Flatten Json data into columns')
+    data_frame = data_frame.withColumn('jsonData',from_json(col('$json$data_infer_schema$_temporary$'),global_schema)).select('jsonData.*')
+    data_frame = data_frame.withColumn('uuid', lit(str(uuid.uuid4())))\
+        .withColumn('etl_create_datetime', current_timestamp())\
+        .withColumn('etl_create_user', lit(job_name))\
+        .withColumn('etl_update_datetime', current_timestamp())\
+        .withColumn('etl_update_user', lit(job_name))\
+        .withColumn('partition_date', current_date())
+    logger.info('End: Flatten Json data into columns')
+    
+    logger.info('Start: Write to S3 Bucket')
+    data_frame.coalesce(1).write.partitionBy('type', 'partition_date').mode('append').parquet(bucket_path)
+    logger.info('End: Write to S3 Bucket')
+
+logger.info('Start: Generate dataframe from catalog table')
+sourceData = glueContext.create_data_frame.from_catalog( \
+    database = 'twilio_kinesis_events', \
+    table_name = 'cde-twilio-stream-flex', \
+    transformation_ctx = 'datasource0', \
+    additional_options = {'startingPosition': 'TRIM_HORIZON', 'inferSchema': 'true'})
+logger.info('End: Generate dataframe from catalog table')
+    
+logger.info('Start: Transform batch')
+glueContext.forEachBatch(frame = sourceData, batch_function = processBatch, options = {'windowSize': '300 seconds', 'checkpointLocation': checkpoint_location})
+logger.info('End: Transform batch')
+
+job.commit()
