@@ -1,12 +1,44 @@
-    logger.info("Start: Get all latest claim data")
-    adh_refill_df = spark.read.format("jdbc").option("url", cdm_creds['url']).option("user", cdm_creds['username']).option("password", cdm_creds['password']).option("dbtable", adh_refill_qry).option("driver", "org.postgresql.Driver").option("fetchsize", 1000).load()
-    adh_refill_df.cache()
-    adh_refill_df_cnt = adh_refill_df.count()
-    logger.info(f"adh_refill_df_cnt : {adh_refill_df_cnt}")
-    logger.info("End: Get all latest claim data")
+import logging
 
-    logger.info("Start: Get all all members who used insulin in this year")
-    insln_mem_df = spark.read.format("jdbc").option("url", cdm_creds['url']).option("user", cdm_creds['username']).option("password", cdm_creds['password']).option("dbtable", insln_mem_qry).option("driver", "org.postgresql.Driver").option("fetchsize", 1000).load()
-    insln_mem_df_cnt = insln_mem_df.count()
-    logger.info(f"insln_mem_df_cnt : {insln_mem_df_cnt}")
-    logger.info("End: Get all all members who used insulin in this year")
+# Initialize logger
+logger = logging.getLogger()
+
+def read_postgres_to_df(spark, query, cdm_creds, log_message):
+    """
+    Reads data from PostgreSQL into a Spark DataFrame.
+
+    Parameters:
+    - spark: SparkSession object
+    - query: The SQL query or table to be read from PostgreSQL
+    - cdm_creds: Dictionary containing 'url', 'username', and 'password' for PostgreSQL connection
+    - log_message: A custom message for logging
+
+    Returns:
+    - A Spark DataFrame containing the data read from PostgreSQL
+    """
+    logger.info(f"Start: {log_message}")
+    df = (
+        spark.read.format("jdbc")
+        .option("url", cdm_creds['url'])
+        .option("user", cdm_creds['username'])
+        .option("password", cdm_creds['password'])
+        .option("dbtable", query)
+        .option("driver", "org.postgresql.Driver")
+        .option("fetchsize", 1000)
+        .load()
+    )
+    logger.info(f"End: {log_message}")
+    return df
+
+# Usage examples:
+adh_refill_df = read_postgres_to_df(spark, adh_refill_qry, cdm_creds, "Get all latest claim data")
+insln_mem_df = read_postgres_to_df(spark, insln_mem_qry, cdm_creds, "Get all members who used insulin in this year")
+
+# If needed outside the function
+adh_refill_df.cache()
+adh_refill_df_cnt = adh_refill_df.count()
+logger.info(f"adh_refill_df count: {adh_refill_df_cnt}")
+
+insln_mem_df.cache()
+insln_mem_df_cnt = insln_mem_df.count()
+logger.info(f"insln_mem_df count: {insln_mem_df_cnt}")
