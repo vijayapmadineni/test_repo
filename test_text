@@ -1,69 +1,40 @@
-import sys
-from awsglue.transforms import *
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
-import logging
-import uuid
-
-## @params: [JOB_NAME]
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 's3bucket'])
-
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-job = Job(glueContext)
-job.init(args['JOB_NAME'], args)
-
-job_name = args['JOB_NAME']
-logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-logger = logging.getLogger(job_name)
-logger.setLevel(logging.INFO)
-
-s3bucket = args['s3bucket']
-checkpoint_location = 's3://'+ s3bucket + '/Twilio/' + job_name + '/Checkpoint'
-bucket_path = 's3://' + s3bucket + '/Twilio/cde_twilio_stream_flex/'
-
-global_schema = StructType([ 
-    StructField('specversion',StringType(),True), 
-    StructField('type',StringType(),True), 
-    StructField('source',StringType(),True), 
-    StructField('id', StringType(), True),
-    StructField('dataschema',StringType(),True), 
-    StructField('datacontenttype',StringType(),True), 
-    StructField('time',StringType(),True), 
-    StructField('data', StringType(), True)
-  ])
-    
-
-def processBatch(data_frame, batchId):
-    logger.info('Start: Flatten Json data into columns')
-    data_frame = data_frame.withColumn('jsonData',from_json(col('$json$data_infer_schema$_temporary$'),global_schema)).select('jsonData.*')
-    data_frame = data_frame.withColumn('uuid', lit(str(uuid.uuid4())))\
-        .withColumn('etl_create_datetime', current_timestamp())\
-        .withColumn('etl_create_user', lit(job_name))\
-        .withColumn('etl_update_datetime', current_timestamp())\
-        .withColumn('etl_update_user', lit(job_name))\
-        .withColumn('partition_date', current_date())
-    logger.info('End: Flatten Json data into columns')
-    
-    logger.info('Start: Write to S3 Bucket')
-    data_frame.coalesce(1).write.partitionBy('type', 'partition_date').mode('append').parquet(bucket_path)
-    logger.info('End: Write to S3 Bucket')
-
-logger.info('Start: Generate dataframe from catalog table')
-sourceData = glueContext.create_data_frame.from_catalog( \
-    database = 'twilio_kinesis_events', \
-    table_name = 'cde-twilio-stream-flex', \
-    transformation_ctx = 'datasource0', \
-    additional_options = {'startingPosition': 'TRIM_HORIZON', 'inferSchema': 'true'})
-logger.info('End: Generate dataframe from catalog table')
-    
-logger.info('Start: Transform batch')
-glueContext.forEachBatch(frame = sourceData, batch_function = processBatch, options = {'windowSize': '300 seconds', 'checkpointLocation': checkpoint_location})
-logger.info('End: Transform batch')
-
-job.commit()
+WITH temp_table AS (
+    SELECT 
+        CONCAT_WS('~', p_num, n_num, 
+            CASE WHEN EXTRACT(QUARTER FROM NOW()) = 1 
+                 THEN EXTRACT(YEAR FROM NOW()) - 1 
+                 ELSE EXTRACT(YEAR FROM NOW()) 
+            END, 
+            CASE WHEN EXTRACT(QUARTER FROM NOW()) = 1 
+                 THEN 4 
+                 ELSE EXTRACT(QUARTER FROM NOW()) - 1 
+            END
+        ) AS id, 
+        p_num, 
+        n_num 
+    FROM table1
+),
+last_quarter_data AS (
+    SELECT 
+        t2.id
+    FROM table2 t2
+    JOIN temp_table tt ON t2.id = tt.id
+    JOIN table3 t3 ON t3.id = tt.id
+    WHERE t3.status = 'pending'
+    AND t3.created_date BETWEEN
+        -- Start date of the last 14 days of the previous quarter
+        CASE 
+            WHEN EXTRACT(QUARTER FROM NOW()) = 1 THEN 
+                DATE_TRUNC('quarter', DATE_TRUNC('year', NOW()) - INTERVAL '1 day') - INTERVAL '13 days'
+            ELSE 
+                DATE_TRUNC('quarter', NOW() - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '17 days'
+        END
+    AND
+        -- End date of the last 14 days of the previous quarter
+        CASE 
+            WHEN EXTRACT(QUARTER FROM NOW()) = 1 THEN 
+                DATE_TRUNC('quarter', DATE_TRUNC('year', NOW()) - INTERVAL '1 day')
+            ELSE 
+                DATE_TRUNC('quarter', NOW() - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '30 days'
+        END
+)
