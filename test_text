@@ -1,40 +1,12 @@
-WITH temp_table AS (
-    SELECT 
-        CONCAT_WS('~', p_num, n_num, 
-            CASE WHEN EXTRACT(QUARTER FROM NOW()) = 1 
-                 THEN EXTRACT(YEAR FROM NOW()) - 1 
-                 ELSE EXTRACT(YEAR FROM NOW()) 
-            END, 
-            CASE WHEN EXTRACT(QUARTER FROM NOW()) = 1 
-                 THEN 4 
-                 ELSE EXTRACT(QUARTER FROM NOW()) - 1 
-            END
-        ) AS id, 
-        p_num, 
-        n_num 
-    FROM table1
-),
-last_quarter_data AS (
-    SELECT 
-        t2.id
-    FROM table2 t2
-    JOIN temp_table tt ON t2.id = tt.id
-    JOIN table3 t3 ON t3.id = tt.id
-    WHERE t3.status = 'pending'
-    AND t3.created_date BETWEEN
-        -- Start date of the last 14 days of the previous quarter
-        CASE 
-            WHEN EXTRACT(QUARTER FROM NOW()) = 1 THEN 
-                DATE_TRUNC('quarter', DATE_TRUNC('year', NOW()) - INTERVAL '1 day') - INTERVAL '13 days'
-            ELSE 
-                DATE_TRUNC('quarter', NOW() - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '17 days'
-        END
-    AND
-        -- End date of the last 14 days of the previous quarter
-        CASE 
-            WHEN EXTRACT(QUARTER FROM NOW()) = 1 THEN 
-                DATE_TRUNC('quarter', DATE_TRUNC('year', NOW()) - INTERVAL '1 day')
-            ELSE 
-                DATE_TRUNC('quarter', NOW() - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '30 days'
-        END
-)
+    logger.info("Start: Get all latest claim data")
+    adh_refill_df = spark.read.format("jdbc").option("url", cdm_creds['url']).option("user", cdm_creds['username']).option("password", cdm_creds['password']).option("dbtable", adh_refill_qry).option("driver", "org.postgresql.Driver").option("fetchsize", 1000).load()
+    adh_refill_df.cache()
+    adh_refill_df_cnt = adh_refill_df.count()
+    logger.info(f"adh_refill_df_cnt : {adh_refill_df_cnt}")
+    logger.info("End: Get all latest claim data")
+
+    logger.info("Start: Get all all members who used insulin in this year")
+    insln_mem_df = spark.read.format("jdbc").option("url", cdm_creds['url']).option("user", cdm_creds['username']).option("password", cdm_creds['password']).option("dbtable", insln_mem_qry).option("driver", "org.postgresql.Driver").option("fetchsize", 1000).load()
+    insln_mem_df_cnt = insln_mem_df.count()
+    logger.info(f"insln_mem_df_cnt : {insln_mem_df_cnt}")
+    logger.info("End: Get all all members who used insulin in this year")
