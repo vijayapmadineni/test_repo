@@ -1,44 +1,31 @@
-import logging
+import datetime
+import pytz
 
-# Initialize logger
-logger = logging.getLogger()
+def is_alternate_wednesday(start_date, today):
+    """Check if today is an alternate Wednesday starting from the start date."""
+    delta_days = (today - start_date).days
+    return delta_days % 14 == 0
 
-def read_postgres_to_df(spark, query, cdm_creds, log_message):
-    """
-    Reads data from PostgreSQL into a Spark DataFrame.
+def test_alternate_wednesdays(start_date, num_weeks=52):
+    """Test the alternate Wednesday logic for a range of weeks."""
+    eastern = pytz.timezone("US/Eastern")
+    current_date = start_date
 
-    Parameters:
-    - spark: SparkSession object
-    - query: The SQL query or table to be read from PostgreSQL
-    - cdm_creds: Dictionary containing 'url', 'username', and 'password' for PostgreSQL connection
-    - log_message: A custom message for logging
+    # Iterate through dates to validate alternate Wednesdays
+    print(f"Starting from {start_date} (Eastern Time):")
+    for week in range(num_weeks):
+        # Advance to the next Wednesday
+        current_date += datetime.timedelta(days=7)
+        current_date_et = datetime.datetime.combine(current_date, datetime.datetime.min.time(), pytz.utc).astimezone(eastern).date()
 
-    Returns:
-    - A Spark DataFrame containing the data read from PostgreSQL
-    """
-    logger.info(f"Start: {log_message}")
-    df = (
-        spark.read.format("jdbc")
-        .option("url", cdm_creds['url'])
-        .option("user", cdm_creds['username'])
-        .option("password", cdm_creds['password'])
-        .option("dbtable", query)
-        .option("driver", "org.postgresql.Driver")
-        .option("fetchsize", 1000)
-        .load()
-    )
-    logger.info(f"End: {log_message}")
-    return df
+        # Check if it's an alternate Wednesday
+        if is_alternate_wednesday(start_date, current_date_et):
+            print(f"  {current_date_et} is an alternate Wednesday")
+        else:
+            print(f"  {current_date_et} is NOT an alternate Wednesday")
 
-# Usage examples:
-adh_refill_df = read_postgres_to_df(spark, adh_refill_qry, cdm_creds, "Get all latest claim data")
-insln_mem_df = read_postgres_to_df(spark, insln_mem_qry, cdm_creds, "Get all members who used insulin in this year")
+# Define the start date (2024-12-11)
+start_date = datetime.date(2024, 12, 11)
 
-# If needed outside the function
-adh_refill_df.cache()
-adh_refill_df_cnt = adh_refill_df.count()
-logger.info(f"adh_refill_df count: {adh_refill_df_cnt}")
-
-insln_mem_df.cache()
-insln_mem_df_cnt = insln_mem_df.count()
-logger.info(f"insln_mem_df count: {insln_mem_df_cnt}")
+# Run the test for the next 52 weeks
+test_alternate_wednesdays(start_date)
