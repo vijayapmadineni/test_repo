@@ -29,3 +29,25 @@ start_date = datetime.date(2024, 12, 11)
 
 # Run the test for the next 52 weeks
 test_alternate_wednesdays(start_date)
+
+
+Starting from 2024-12-11 (Eastern Time):
+  2024-12-17 is NOT an alternate Wednesday
+  2024-12-24 is NOT an alternate Wednesday
+  2024-12-31 is NOT an alternate Wednesday
+  2025-01-07 is NOT an alternate Wednesday
+  2025-01-14 is NOT an alternate Wednesday
+  2025-01-21 is NOT an alternate Wednesday
+  2025-01-28 is NOT an alternate Wednesday
+  2025-02-04 is NOT an alternate Wednesday
+  2025-02-11 is NOT an alternate Wednesday
+  2025-02-18 is NOT an alternate Wednesday
+  2025-02-25 is NOT an alternate Wednesday
+  2025-03-04 is NOT an alternate Wednesday
+  2025-03-11 is NOT an alternate Wednesday
+  2025-03-18 is NOT an alternate Wednesday
+  2025-03-25 is NOT an alternate Wednesday
+  2025-04-01 is NOT an alternate Wednesday
+  2025-04-08 is NOT an alternate Wednesday
+  2025-04-15 is NOT an alternate Wednesday
+  2025-04-22 is NOT an alternate Wednesday
