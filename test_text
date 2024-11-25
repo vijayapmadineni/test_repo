@@ -1,53 +1,81 @@
+import boto3
 import datetime
 import pytz
+import os
+
+# Initialize the Glue client
+glue_client = boto3.client('glue')
 
 def is_alternate_wednesday(start_date, today):
     """Check if today is an alternate Wednesday starting from the start date."""
     delta_days = (today - start_date).days
     return delta_days % 14 == 0
 
-def test_alternate_wednesdays(start_date, num_weeks=52):
-    """Test the alternate Wednesday logic for a range of weeks."""
-    eastern = pytz.timezone("US/Eastern")
-    current_date = start_date
+def lambda_handler(event, context):
+    try:
+        # Environment variables for workflow and start date
+        workflow_name = os.environ['WORKFLOW_NAME']
+        start_date_str = os.environ['START_DATE']
+        
+        # Parse the start date
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
 
-    # Iterate through dates to validate alternate Wednesdays
-    print(f"Starting from {start_date} (Eastern Time):")
-    for week in range(num_weeks):
-        # Advance to the next Wednesday
-        current_date += datetime.timedelta(days=7)
-        current_date_et = datetime.datetime.combine(current_date, datetime.datetime.min.time(), pytz.utc).astimezone(eastern).date()
+        # Get the current date in Eastern Time
+        eastern = pytz.timezone("US/Eastern")
+        today = datetime.datetime.now(eastern).date()
 
-        # Check if it's an alternate Wednesday
-        if is_alternate_wednesday(start_date, current_date_et):
-            print(f"  {current_date_et} is an alternate Wednesday")
+        # Check if today is an alternate Wednesday
+        if today.weekday() == 2 and is_alternate_wednesday(start_date, today):  # Wednesday = 2
+            print(f"Today ({today}) is an alternate Wednesday. Triggering the workflow.")
+
+            # Trigger the Glue workflow
+            response = glue_client.start_workflow_run(Name=workflow_name)
+            
+            print(f"Workflow triggered successfully: {response['RunId']}")
+            return {"status": "Workflow triggered", "RunId": response['RunId']}
         else:
-            print(f"  {current_date_et} is NOT an alternate Wednesday")
+            print(f"Today ({today}) is NOT an alternate Wednesday. No action taken.")
+            return {"status": "Not an alternate Wednesday"}
 
-# Define the start date (2024-12-11)
-start_date = datetime.date(2024, 12, 11)
-
-# Run the test for the next 52 weeks
-test_alternate_wednesdays(start_date)
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"status": "Failed", "error": str(e)}
 
 
-Starting from 2024-12-11 (Eastern Time):
-  2024-12-17 is NOT an alternate Wednesday
-  2024-12-24 is NOT an alternate Wednesday
-  2024-12-31 is NOT an alternate Wednesday
-  2025-01-07 is NOT an alternate Wednesday
-  2025-01-14 is NOT an alternate Wednesday
-  2025-01-21 is NOT an alternate Wednesday
-  2025-01-28 is NOT an alternate Wednesday
-  2025-02-04 is NOT an alternate Wednesday
-  2025-02-11 is NOT an alternate Wednesday
-  2025-02-18 is NOT an alternate Wednesday
-  2025-02-25 is NOT an alternate Wednesday
-  2025-03-04 is NOT an alternate Wednesday
-  2025-03-11 is NOT an alternate Wednesday
-  2025-03-18 is NOT an alternate Wednesday
-  2025-03-25 is NOT an alternate Wednesday
-  2025-04-01 is NOT an alternate Wednesday
-  2025-04-08 is NOT an alternate Wednesday
-  2025-04-15 is NOT an alternate Wednesday
-  2025-04-22 is NOT an alternate Wednesday
+
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  WorkFlow1TriggerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./lambda
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - glue:StartWorkflowRun
+              Resource: arn:aws:glue:<region>:<account-id>:workflow/work_flow_1
+      Environment:
+        Variables:
+          WORKFLOW_NAME: "work_flow_1"  # Your AWS Glue workflow name
+          START_DATE: "2024-12-11"      # Start date for alternate Wednesdays
+  WorkFlow1ScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: cron(0 6 ? * 3 *)  # Every Wednesday at 6:00 AM UTC
+      State: ENABLED
+      Targets:
+        - Id: WorkFlow1Trigger
+          Arn: !GetAtt WorkFlow1TriggerLambda.Arn
+  LambdaInvokePermissionForEventBridge:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt WorkFlow1TriggerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WorkFlow1ScheduleRule.Arn
