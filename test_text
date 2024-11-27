@@ -4,143 +4,128 @@ from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
-from pyspark.sql.functions import lit, unix_timestamp, explode_outer, col, concat_ws, to_json, udf, expr
-from pyspark.sql.types import StringType
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit, unix_timestamp, col
 import boto3
-from datetime import datetime, timedelta
-import requests
-import logging
-import zipfile
-import io
+from datetime import datetime
 import pytz
-from elasticsearch import Elasticsearch, RequestsHttpConnection, helpers, ElasticsearchException
-from requests_aws4auth import AWS4Auth
-import psycopg2
-import re
-import json
-from functools import partial
-import uuid
+from opensearchpy import OpenSearch, helpers
 
-
-
-sys.argv += ['--JOB_NAME', 'cde_si_job_ndc_codes_test', '--kw_s3bucket', 'my_bucket', '--es_endpoint', 'https://my_endpoint.us-east-1.es.amazonaws.com']
-
+# Constants
 REGION = 'us-east-1'
 NY_TZ = pytz.timezone('US/Eastern')
 
+# Argument Parsing
+sys.argv += ['--JOB_NAME', 'cde_si_job_ndc_codes_test', '--kw_s3bucket', 'my_bucket', '--es_endpoint', 'https://my_opensearch.us-east-1.es.amazonaws.com']
 
 def setup_logging(job_name):
+    """Set up logging for the Glue job."""
+    import logging
     logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     logger = logging.getLogger(job_name)
     logger.setLevel(logging.INFO)
     return logger
 
 
-def get_aws_auth():
-    credentials = boto3.Session().get_credentials()
-    return AWS4Auth(credentials.access_key, credentials.secret_key, REGION, 'es', session_token=credentials.token)
-
-
-def get_es_client(es_endpoint):
-    awsauth = get_aws_auth()
-    return Elasticsearch(
-        [es_endpoint],
-        http_auth=awsauth,
+def get_opensearch_client(os_endpoint):
+    """Get an OpenSearch client using AWS SigV4 authentication."""
+    session = boto3.Session()
+    credentials = session.get_credentials()
+    auth = OpenSearch.AWSV4SignerAuth(credentials, REGION)
+    return OpenSearch(
+        hosts=[{"host": os_endpoint.replace("https://", "").split(":")[0], "port": 443}],
+        http_auth=auth,
         use_ssl=True,
-        verify_certs=True,
-        connection_class=RequestsHttpConnection
+        verify_certs=True
     )
 
 
-def format_records_for_elastic(recordList, index: str):
-    for recordRow in recordList:
-        record = recordRow.asDict()
-        # print(f"Formatting record {record.get('id')} for insert")
+def format_records_for_opensearch(record_list, index: str):
+    """Format records for bulk upload to OpenSearch."""
+    for record_row in record_list:
+        record = record_row.asDict()
         yield {
             "_index": index,
-            "_id": record.get("id"),
-            "_op_type": "index",
+            "_id": record.get("id", str(uuid.uuid4())),  # Ensure unique ID if not present
             "_source": record
         }
 
 
-def bulk_upload(es_endpoint, index):
+def bulk_upload(os_client, index):
+    """Return a partitioned function for bulk uploading to OpenSearch."""
     def bulk_upload_partitioned(partitioned_records):
-        failure_ids = []
-        es = get_es_client(es_endpoint)
         try:
             result = helpers.bulk(
-                es,
-                format_records_for_elastic(partitioned_records, index),
-                stats_only=False,
+                os_client,
+                format_records_for_opensearch(partitioned_records, index),
                 raise_on_error=False,
-                raise_on_exception=False,
-                max_retries=2,
-                initial_backoff=1,
+                stats_only=True,
                 chunk_size=100
             )
-            print(result)
-            print(f"Number of records successfully added to ES index {index}: {result[0]}")
-            print(f"Number of records failed to added Elasticsearch: {result[1]}")
-            failures = result[1]
-            if failures:
-                failure_ids = [failed_record.get('index').get('id') for failed_record in failures if failed_record.get('index')]
-        except ElasticsearchException as ex:
-            print("bulk API error")
-            print(ex, exc_info=True)
-
-        print(f"List of Id's that failed to update in ES {failure_ids}")
-        if failure_ids:
-            yield failure_ids
+            print(f"Number of records successfully added to OpenSearch index {index}: {result[0]}")
+            print(f"Number of records failed: {result[1]}")
+        except Exception as ex:
+            print(f"Error during bulk upload: {ex}")
     return bulk_upload_partitioned
 
 
-def manage_es_alias(es, es_index, es_alias):
-    if es.indices.exists_alias(name=es_alias):
-        current_indices = list(es.indices.get_alias(name=es_alias).keys())
-        old_index = current_indices[0] if current_indices else None
-    else:
-        old_index = None
-    if old_index:
-        es.indices.update_aliases({
-            "actions": [
-                {"remove": {"index": old_index, "alias": es_alias}},
-                {"add": {"index": es_index, "alias": es_alias}}
-            ]
-        })
-        es.indices.delete(index=old_index)
-    else:
-        es.indices.put_alias(index=es_index, name=es_alias)
+def manage_opensearch_alias(os_client, index, alias):
+    """Manage OpenSearch alias to point to the new index."""
+    if os_client.indices.exists_alias(name=alias):
+        current_indices = list(os_client.indices.get_alias(name=alias).keys())
+        for old_index in current_indices:
+            os_client.indices.delete_alias(index=old_index, name=alias)
+            os_client.indices.delete(index=old_index)
+            print(f"Removed alias '{alias}' from index '{old_index}' and deleted index.")
+    os_client.indices.put_alias(index=index, name=alias)
+    print(f"Alias '{alias}' now points to index '{index}'.")
 
 
 def main():
-    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'src_url', 'es_endpoint'])
+    """Main Glue Job Function."""
+    # Parse arguments
+    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'es_endpoint'])
+    job_name = args['JOB_NAME']
+    os_endpoint = args['es_endpoint']
 
+    # Initialize Spark and Glue contexts
     sc = SparkContext()
-    glueContext = GlueContext(sc)
-    spark = glueContext.spark_session
-    job = Job(glueContext)
-    job.init(args['JOB_NAME'], args)
+    glue_context = GlueContext(sc)
+    spark = glue_context.spark_session
+    job = Job(glue_context)
+    job.init(job_name, args)
 
-    logger = setup_logging(args['JOB_NAME'])
-    s3 = boto3.client('s3')
+    logger = setup_logging(job_name)
 
+    # Read source data
     s3_json_path = 's3://hf-dev-cdp-kitewheel/drug_ndc_codes/latest/cleaned_drug-ndc-0001-of-0001.json'
     spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
     src_cnt = spark_df.count()
-    logger.info(f"Count of records in source json file: {src_cnt}")
+    logger.info(f"Count of records in source JSON file: {src_cnt}")
 
-    es_index = 'drug_ndc_codes_es_' + datetime.now(NY_TZ).strftime('%Y%m%d%H%M%S')
-    logger.info(f"Start: Load documents to ES index: {es_index}")
-    failures = spark_df.rdd.mapPartitions(bulk_upload(args['es_endpoint'], es_index))
-    logger.info(f'failues: {failures.collect()}')
-    logger.info(f"End: Load documents to ES index: {es_index}")
+    # Prepare OpenSearch client
+    os_client = get_opensearch_client(os_endpoint)
 
-    logger.info("Start: Switch index for alias")
-    es = get_es_client(args['es_endpoint'])
-    manage_es_alias(es, es_index, 'drug_ndc_codes_es')
-    logger.info("End: Switch index for alias")
+    # Define index and alias
+    index_name = 'drug_ndc_codes_es_' + datetime.now(NY_TZ).strftime('%Y%m%d%H%M%S')
+    alias_name = 'drug_ndc_codes_es'
+
+    # Create index in OpenSearch
+    if not os_client.indices.exists(index=index_name):
+        os_client.indices.create(index=index_name)
+        logger.info(f"Created index: {index_name}")
+
+    # Bulk upload data to OpenSearch
+    logger.info(f"Start: Bulk upload to OpenSearch index: {index_name}")
+    spark_df.rdd.mapPartitions(bulk_upload(os_client, index_name)).collect()
+    logger.info(f"End: Bulk upload to OpenSearch index: {index_name}")
+
+    # Update alias to point to the new index
+    logger.info("Start: Manage OpenSearch alias")
+    manage_opensearch_alias(os_client, index_name, alias_name)
+    logger.info("End: Manage OpenSearch alias")
+
+    # Commit job
     job.commit()
 
 
