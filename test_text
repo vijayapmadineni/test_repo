@@ -4,20 +4,36 @@ import zipfile
 import os
 import re
 from pyspark.sql import SparkSession
+import sys
+from datetime import datetime
 
 # Configurations
 SMB_SERVER = "smb.mylocation.com"
 SMB_SHARE_NAME = "shared"
-SMB_FOLDER = "/folder1/folder2"
+BASE_FOLDER = "/folder1/folder2/"
 SMB_USERNAME = "your_username"
 SMB_PASSWORD = "your_password"
-SMB_DOMAIN = ""
 S3_BUCKET = "my_s3bucket"
 S3_DIR = "s3dir1/s3dir2"
 ZIP_FILE_PREFIX = "myzipfile_"
 EXCEL_FILE_PREFIX = "my_file_prefix_abc_xcy"
-DYNAMODB_TABLE = "ProcessedFiles"
 LOCAL_DOWNLOAD_PATH = "/tmp/"
+
+def find_dynamic_folder(smb_server, share_name, base_folder, username, password, year, month):
+    """Find the dynamic folder matching the pattern folder3_yyyy_mytext_yyyymmdd_abc."""
+    conn = SMBConnection(username, password, "", "", domain="", use_ntlm_v2=True)
+    conn.connect(smb_server, 139)
+
+    folders = conn.listPath(share_name, base_folder)
+    pattern = rf"folder3_{year}_mytext_{year}{month:02d}\d{{2}}_abc"
+    for folder in folders:
+        if folder.isDirectory and re.match(pattern, folder.filename):
+            dynamic_folder = os.path.join(base_folder, folder.filename)
+            print(f"Found dynamic folder: {dynamic_folder}")
+            return dynamic_folder
+    conn.close()
+    raise FileNotFoundError(f"No folder matching pattern {pattern} found in {base_folder}")
+
 
 def find_zip_file(smb_server, share_name, folder, username, password, prefix):
     """Find the ZIP file with the specified prefix."""
@@ -38,10 +54,14 @@ def download_from_smb(smb_server, share_name, folder, filename, username, passwo
     conn = SMBConnection(username, password, "", "", domain="", use_ntlm_v2=True)
     conn.connect(smb_server, 139)
 
-    with open(local_path, "wb") as file_obj:
-        conn.retrieveFile(share_name, f"{folder}/{filename}", file_obj)
-    conn.close()
-    print(f"Downloaded {filename} to {local_path}")
+    try:
+        with open(local_path, "wb") as file_obj:
+            conn.retrieveFile(share_name, f"{folder}/{filename}", file_obj)
+        print(f"Downloaded {filename} to {local_path}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download ZIP file {filename}: {e}")
+    finally:
+        conn.close()
 
 
 def extract_excel_file(zip_path, prefix):
@@ -59,8 +79,11 @@ def extract_excel_file(zip_path, prefix):
 def upload_to_s3(local_file_path, bucket_name, s3_key):
     """Upload a file to S3."""
     s3 = boto3.client("s3")
-    s3.upload_file(local_file_path, bucket_name, s3_key)
-    print(f"Uploaded {local_file_path} to s3://{bucket_name}/{s3_key}")
+    try:
+        s3.upload_file(local_file_path, bucket_name, s3_key)
+        print(f"Uploaded {local_file_path} to s3://{bucket_name}/{s3_key}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to upload {local_file_path} to S3: {e}")
 
 
 def read_excel_with_spark(spark, file_path):
@@ -75,66 +98,90 @@ def read_excel_with_spark(spark, file_path):
 
 def write_to_postgresql(df, db_url, db_properties, table_name):
     """Write Spark DataFrame to PostgreSQL."""
-    df.write \
-        .jdbc(url=db_url, table=table_name, mode="append", properties=db_properties)
-    print(f"Data written to PostgreSQL table {table_name}")
+    try:
+        df.write \
+          .jdbc(url=db_url, table=table_name, mode="append", properties=db_properties)
+        print(f"Data written to PostgreSQL table {table_name}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to write data to PostgreSQL: {e}")
 
 
 def main():
     # Initialize Spark session
     spark = SparkSession.builder \
-        .appName("Process Excel File from ZIP") \
+        .appName("Process Excel File from ZIP in Dynamic Folder") \
         .getOrCreate()
 
-    # Step 1: Find the ZIP file in SMB
+    # Step 1: Find the dynamic folder
+    current_year = datetime.now().year
+    current_month = datetime.now().month
+    try:
+        dynamic_folder = find_dynamic_folder(
+            smb_server=SMB_SERVER,
+            share_name=SMB_SHARE_NAME,
+            base_folder=BASE_FOLDER,
+            username=SMB_USERNAME,
+            password=SMB_PASSWORD,
+            year=current_year,
+            month=current_month
+        )
+    except FileNotFoundError as e:
+        print(e)
+        sys.exit(1)  # Explicitly fail the job
+
+    # Step 2: Find the ZIP file in the dynamic folder
     try:
         zip_file_name = find_zip_file(
             smb_server=SMB_SERVER,
             share_name=SMB_SHARE_NAME,
-            folder=SMB_FOLDER,
+            folder=dynamic_folder,
             username=SMB_USERNAME,
             password=SMB_PASSWORD,
             prefix=ZIP_FILE_PREFIX
         )
     except FileNotFoundError as e:
         print(e)
-        return
+        sys.exit(1)  # Explicitly fail the job
 
-    # Step 2: Download ZIP file from SMB
+    # Step 3: Download ZIP file from SMB
     local_zip_path = os.path.join(LOCAL_DOWNLOAD_PATH, zip_file_name)
     try:
         download_from_smb(
             smb_server=SMB_SERVER,
             share_name=SMB_SHARE_NAME,
-            folder=SMB_FOLDER,
+            folder=dynamic_folder,
             filename=zip_file_name,
             username=SMB_USERNAME,
             password=SMB_PASSWORD,
             local_path=local_zip_path,
         )
     except Exception as e:
-        print(f"Failed to download ZIP file: {e}")
-        return
+        print(e)
+        sys.exit(1)  # Explicitly fail the job
 
-    # Step 3: Extract Excel file from ZIP
+    # Step 4: Extract Excel file from ZIP
     try:
         extracted_excel_file = extract_excel_file(local_zip_path, EXCEL_FILE_PREFIX)
     except FileNotFoundError as e:
         print(e)
-        return
+        sys.exit(1)  # Explicitly fail the job
 
-    # Step 4: Upload extracted file to S3
+    # Step 5: Upload extracted file to S3
     s3_key = f"{S3_DIR}/{os.path.basename(extracted_excel_file)}"
-    upload_to_s3(extracted_excel_file, S3_BUCKET, s3_key)
+    try:
+        upload_to_s3(extracted_excel_file, S3_BUCKET, s3_key)
+    except Exception as e:
+        print(e)
+        sys.exit(1)  # Explicitly fail the job
 
-    # Step 5: Read the Excel file with Spark
+    # Step 6: Read the Excel file with Spark
     try:
         df = read_excel_with_spark(spark, extracted_excel_file)
     except Exception as e:
-        print(f"Failed to read Excel file: {e}")
-        return
+        print(e)
+        sys.exit(1)  # Explicitly fail the job
 
-    # Step 6: Write data to PostgreSQL
+    # Step 7: Write data to PostgreSQL
     DB_URL = "jdbc:postgresql://db_host:5432/db_name"
     DB_PROPERTIES = {"user": "db_user", "password": "db_password", "driver": "org.postgresql.Driver"}
     TABLE_NAME = "mytable1"
@@ -142,8 +189,8 @@ def main():
     try:
         write_to_postgresql(df, DB_URL, DB_PROPERTIES, TABLE_NAME)
     except Exception as e:
-        print(f"Failed to write data to PostgreSQL: {e}")
-        return
+        print(e)
+        sys.exit(1)  # Explicitly fail the job
 
 
 if __name__ == "__main__":
