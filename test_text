@@ -1,132 +1,149 @@
-import sys
-from awsglue.transforms import *
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import lit, unix_timestamp, col
+from smb.SMBConnection import SMBConnection
 import boto3
-from datetime import datetime
-import pytz
-from opensearchpy import OpenSearch, helpers
+import zipfile
+import os
+import re
+from pyspark.sql import SparkSession
 
-# Constants
-REGION = 'us-east-1'
-NY_TZ = pytz.timezone('US/Eastern')
+# Configurations
+SMB_SERVER = "smb.mylocation.com"
+SMB_SHARE_NAME = "shared"
+SMB_FOLDER = "/folder1/folder2"
+SMB_USERNAME = "your_username"
+SMB_PASSWORD = "your_password"
+SMB_DOMAIN = ""
+S3_BUCKET = "my_s3bucket"
+S3_DIR = "s3dir1/s3dir2"
+ZIP_FILE_PREFIX = "myzipfile_"
+EXCEL_FILE_PREFIX = "my_file_prefix_abc_xcy"
+DYNAMODB_TABLE = "ProcessedFiles"
+LOCAL_DOWNLOAD_PATH = "/tmp/"
 
-# Argument Parsing
-sys.argv += ['--JOB_NAME', 'cde_si_job_ndc_codes_test', '--kw_s3bucket', 'my_bucket', '--es_endpoint', 'https://my_opensearch.us-east-1.es.amazonaws.com']
+def find_zip_file(smb_server, share_name, folder, username, password, prefix):
+    """Find the ZIP file with the specified prefix."""
+    conn = SMBConnection(username, password, "", "", domain="", use_ntlm_v2=True)
+    conn.connect(smb_server, 139)
 
-def setup_logging(job_name):
-    """Set up logging for the Glue job."""
-    import logging
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    logger = logging.getLogger(job_name)
-    logger.setLevel(logging.INFO)
-    return logger
-
-
-def get_opensearch_client(os_endpoint):
-    """Get an OpenSearch client using AWS SigV4 authentication."""
-    session = boto3.Session()
-    credentials = session.get_credentials()
-    auth = OpenSearch.AWSV4SignerAuth(credentials, REGION)
-    return OpenSearch(
-        hosts=[{"host": os_endpoint.replace("https://", "").split(":")[0], "port": 443}],
-        http_auth=auth,
-        use_ssl=True,
-        verify_certs=True
-    )
-
-
-def format_records_for_opensearch(record_list, index: str):
-    """Format records for bulk upload to OpenSearch."""
-    for record_row in record_list:
-        record = record_row.asDict()
-        yield {
-            "_index": index,
-            "_id": record.get("id", str(uuid.uuid4())),  # Ensure unique ID if not present
-            "_source": record
-        }
+    files = conn.listPath(share_name, folder)
+    for file in files:
+        if file.filename.startswith(prefix) and file.filename.endswith(".zip"):
+            print(f"Found ZIP file: {file.filename}")
+            return file.filename
+    conn.close()
+    raise FileNotFoundError(f"No ZIP file found with prefix {prefix}")
 
 
-def bulk_upload(os_client, index):
-    """Return a partitioned function for bulk uploading to OpenSearch."""
-    def bulk_upload_partitioned(partitioned_records):
-        try:
-            result = helpers.bulk(
-                os_client,
-                format_records_for_opensearch(partitioned_records, index),
-                raise_on_error=False,
-                stats_only=True,
-                chunk_size=100
-            )
-            print(f"Number of records successfully added to OpenSearch index {index}: {result[0]}")
-            print(f"Number of records failed: {result[1]}")
-        except Exception as ex:
-            print(f"Error during bulk upload: {ex}")
-    return bulk_upload_partitioned
+def download_from_smb(smb_server, share_name, folder, filename, username, password, local_path):
+    """Download file from SMB share."""
+    conn = SMBConnection(username, password, "", "", domain="", use_ntlm_v2=True)
+    conn.connect(smb_server, 139)
+
+    with open(local_path, "wb") as file_obj:
+        conn.retrieveFile(share_name, f"{folder}/{filename}", file_obj)
+    conn.close()
+    print(f"Downloaded {filename} to {local_path}")
 
 
-def manage_opensearch_alias(os_client, index, alias):
-    """Manage OpenSearch alias to point to the new index."""
-    if os_client.indices.exists_alias(name=alias):
-        current_indices = list(os_client.indices.get_alias(name=alias).keys())
-        for old_index in current_indices:
-            os_client.indices.delete_alias(index=old_index, name=alias)
-            os_client.indices.delete(index=old_index)
-            print(f"Removed alias '{alias}' from index '{old_index}' and deleted index.")
-    os_client.indices.put_alias(index=index, name=alias)
-    print(f"Alias '{alias}' now points to index '{index}'.")
+def extract_excel_file(zip_path, prefix):
+    """Extract the desired Excel file from the ZIP."""
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        for file_name in zip_ref.namelist():
+            if file_name.startswith(prefix) and file_name.endswith(".xlsx"):
+                extracted_path = f"/tmp/{file_name}"
+                zip_ref.extract(file_name, "/tmp")
+                print(f"Extracted {file_name} to {extracted_path}")
+                return extracted_path
+    raise FileNotFoundError(f"No file matching prefix {prefix} and .xlsx extension found in the ZIP.")
+
+
+def upload_to_s3(local_file_path, bucket_name, s3_key):
+    """Upload a file to S3."""
+    s3 = boto3.client("s3")
+    s3.upload_file(local_file_path, bucket_name, s3_key)
+    print(f"Uploaded {local_file_path} to s3://{bucket_name}/{s3_key}")
+
+
+def read_excel_with_spark(spark, file_path):
+    """Read an Excel file using Spark."""
+    df = spark.read.format("com.crealytics.spark.excel") \
+        .option("header", "true") \
+        .option("inferSchema", "true") \
+        .load(file_path)
+    df.show()  # For debugging
+    return df
+
+
+def write_to_postgresql(df, db_url, db_properties, table_name):
+    """Write Spark DataFrame to PostgreSQL."""
+    df.write \
+        .jdbc(url=db_url, table=table_name, mode="append", properties=db_properties)
+    print(f"Data written to PostgreSQL table {table_name}")
 
 
 def main():
-    """Main Glue Job Function."""
-    # Parse arguments
-    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'es_endpoint'])
-    job_name = args['JOB_NAME']
-    os_endpoint = args['es_endpoint']
+    # Initialize Spark session
+    spark = SparkSession.builder \
+        .appName("Process Excel File from ZIP") \
+        .getOrCreate()
 
-    # Initialize Spark and Glue contexts
-    sc = SparkContext()
-    glue_context = GlueContext(sc)
-    spark = glue_context.spark_session
-    job = Job(glue_context)
-    job.init(job_name, args)
+    # Step 1: Find the ZIP file in SMB
+    try:
+        zip_file_name = find_zip_file(
+            smb_server=SMB_SERVER,
+            share_name=SMB_SHARE_NAME,
+            folder=SMB_FOLDER,
+            username=SMB_USERNAME,
+            password=SMB_PASSWORD,
+            prefix=ZIP_FILE_PREFIX
+        )
+    except FileNotFoundError as e:
+        print(e)
+        return
 
-    logger = setup_logging(job_name)
+    # Step 2: Download ZIP file from SMB
+    local_zip_path = os.path.join(LOCAL_DOWNLOAD_PATH, zip_file_name)
+    try:
+        download_from_smb(
+            smb_server=SMB_SERVER,
+            share_name=SMB_SHARE_NAME,
+            folder=SMB_FOLDER,
+            filename=zip_file_name,
+            username=SMB_USERNAME,
+            password=SMB_PASSWORD,
+            local_path=local_zip_path,
+        )
+    except Exception as e:
+        print(f"Failed to download ZIP file: {e}")
+        return
 
-    # Read source data
-    s3_json_path = 's3://hf-dev-cdp-kitewheel/drug_ndc_codes/latest/cleaned_drug-ndc-0001-of-0001.json'
-    spark_df = spark.read.option("multiLine", True).option("mode", "PERMISSIVE").json(s3_json_path)
-    src_cnt = spark_df.count()
-    logger.info(f"Count of records in source JSON file: {src_cnt}")
+    # Step 3: Extract Excel file from ZIP
+    try:
+        extracted_excel_file = extract_excel_file(local_zip_path, EXCEL_FILE_PREFIX)
+    except FileNotFoundError as e:
+        print(e)
+        return
 
-    # Prepare OpenSearch client
-    os_client = get_opensearch_client(os_endpoint)
+    # Step 4: Upload extracted file to S3
+    s3_key = f"{S3_DIR}/{os.path.basename(extracted_excel_file)}"
+    upload_to_s3(extracted_excel_file, S3_BUCKET, s3_key)
 
-    # Define index and alias
-    index_name = 'drug_ndc_codes_es_' + datetime.now(NY_TZ).strftime('%Y%m%d%H%M%S')
-    alias_name = 'drug_ndc_codes_es'
+    # Step 5: Read the Excel file with Spark
+    try:
+        df = read_excel_with_spark(spark, extracted_excel_file)
+    except Exception as e:
+        print(f"Failed to read Excel file: {e}")
+        return
 
-    # Create index in OpenSearch
-    if not os_client.indices.exists(index=index_name):
-        os_client.indices.create(index=index_name)
-        logger.info(f"Created index: {index_name}")
+    # Step 6: Write data to PostgreSQL
+    DB_URL = "jdbc:postgresql://db_host:5432/db_name"
+    DB_PROPERTIES = {"user": "db_user", "password": "db_password", "driver": "org.postgresql.Driver"}
+    TABLE_NAME = "mytable1"
 
-    # Bulk upload data to OpenSearch
-    logger.info(f"Start: Bulk upload to OpenSearch index: {index_name}")
-    spark_df.rdd.mapPartitions(bulk_upload(os_client, index_name)).collect()
-    logger.info(f"End: Bulk upload to OpenSearch index: {index_name}")
-
-    # Update alias to point to the new index
-    logger.info("Start: Manage OpenSearch alias")
-    manage_opensearch_alias(os_client, index_name, alias_name)
-    logger.info("End: Manage OpenSearch alias")
-
-    # Commit job
-    job.commit()
+    try:
+        write_to_postgresql(df, DB_URL, DB_PROPERTIES, TABLE_NAME)
+    except Exception as e:
+        print(f"Failed to write data to PostgreSQL: {e}")
+        return
 
 
 if __name__ == "__main__":
