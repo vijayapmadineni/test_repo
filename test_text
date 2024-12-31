@@ -1,3 +1,5 @@
+I need to complete self evaluation for this year and my role is technical manager(no employees report to me) and work in aws glue and other aws services, I need to fill below two sections and they provided guidanace to write as mentioned below.
+
 Section 1: Enterprise Value
 Consider how you met your core job responsibilities this year; include what you did well, what you learned, and your areas of opportunity. Make sure to also include how you demonstrated our Trailblazer culture and impacted our members.
 Use the questions below to guide your thinking, provide specific examples, and then, select a performance rating.
@@ -9,3 +11,22 @@ How did you demonstrate our compliance standards? (Note any employee with an ins
 
 Section 2: Goals
 In support of Healthfirst’s proactive approach to regulatory compliance and mission to our members, perform job responsibilities in full compliance with organization and department policies, procedures, and regulations.  Recognizing the obligation of each employee to report compliance issues, identify and raise issues promptly so the organization can prioritize and manage risk. Contribute to and implement effective controls and, where applicable, with timely and sustainable corrective actions designed to meet all regulatory requirements and timeframes and prevent future noncompliance.
+
+
+I have done below during this year please use below points to write above two sections:
+
+1. Work with the team to migrate all 200+ glue jobs to latest version 4 to improve performance and utilize latest funcationality.
+2. explored open search technology and implements in glue job for formualry project in short period of time this involves getting source data from open fda and cleansing the data loading it to postgresql and open search.
+3. Helped/guided CJA team to learn AWS Glue and help in deployment process.
+4. Implemented preference management changes and dnc file changes.
+5. Helped CJA team to implement winback changes in different phases.
+6. implement custom scheduler for aws glue jobs this opened great flexibility to schedule job on demand and no need to wait for production deployments/releases.
+7. Worked with team to improve coding standards by implementing better logging of jobs, scheduling and naming conventions and developing lambda for reporting glue job failures and logging the status of each run into postgresql tables.
+8. Succesfully implemented provider fax and pharmacy fax by glue jobs that have complex design  getting sftp files from external sources and loading into alfresco system and logging scheduless for kitewheel.
+9. Found solution for twilio jobs to improve performance this greatly helped team to implement solution in 10s of twilio jobs this greatly reduced the time the jobs runs and helped to run jobs more frequently to get near real time data from twilio reports.
+10. Worked with i and o support team to integrate all data team 3 pipelines with service now selef service deployments this enabled the team to deploy code in all lower environments themself without any help from the deployment team this greatly reduced time to deploy code in lower environments.
+11. monitoring production jobs and taking appropriate actions or co ordinate other teams when jobs failed.
+14. Co ordinating with admin and deployment teams to successfly and smooth implementation of monthly production releases.
+
+
+No need to use all points here use more appropriate suitable points and provide review for Enterprise Value and Goals
