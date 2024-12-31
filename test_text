@@ -1,32 +1,37 @@
-I need to complete self evaluation for this year and my role is technical manager(no employees report to me) and work in aws glue and other aws services, I need to fill below two sections and they provided guidanace to write as mentioned below.
-
 Section 1: Enterprise Value
-Consider how you met your core job responsibilities this year; include what you did well, what you learned, and your areas of opportunity. Make sure to also include how you demonstrated our Trailblazer culture and impacted our members.
-Use the questions below to guide your thinking, provide specific examples, and then, select a performance rating.
-How did you contribute to your team’s success?
-How has your work helped Healthfirst achieve its strategic priorities?
-What aspects of our Trailblazer Culture and Leader Compass (if you are leading a team) did you exemplify in your work?
-How did your work impact Healthfirst and our sponsors, providers, and members?
-How did you demonstrate our compliance standards? (Note any employee with an instance of non-compliance during the assessed year will receive a rating of More Impact Expected for this section.)
+This year, I successfully fulfilled my core job responsibilities while contributing to team success and aligning my efforts with Healthfirst's strategic priorities. Below is a summary of my accomplishments and how they reflect the Trailblazer culture:
+
+Contributing to Team Success:
+Led the migration of over 200+ AWS Glue jobs to version 4, enabling improved performance, reduced runtime, and adoption of the latest functionalities. This initiative significantly streamlined operations and enhanced job reliability.
+Provided guidance to the CJA team, empowering them to learn AWS Glue, adopt best practices, and helped with deployment processes. This fostered cross-team collaboration and knowledge sharing.
+Introduced a custom scheduler for AWS Glue jobs, delivering flexibility for scheduling jobs on demand. This eliminated dependency on production deployments for custom on demand schedules.
+
+Impact on Healthfirst's Strategic Priorities:
+Delivered impactful solutions for the Formulary Project, utilizing OpenSearch technology and integrating data pipelines with Open FDA, PostgreSQL, and OpenSearch within a short timeframe. These efforts aligned with Healthfirst's focus on innovation and operational excellence.
+Enhanced the efficiency of Twilio-related jobs by implementing a performance optimization solution. This reduced processing time, enabled near real-time data insights, and supported timely decision-making for critical operations.
+Delivered complex Provider and Pharmacy Fax workflows, ensuring efficient integration of external SFTP files with Alfresco and Kitewheel systems.
+
+Trailblazer Culture and Compliance Standards:
+Demonstrated innovation by improving coding standards through enhanced logging, scheduling, and naming conventions. Additionally, I developed a Lambda function for reporting job failures and logging statuses, driving process transparency and reliability.
+Fostered collaboration by integrating data pipelines with ServiceNow self-service deployments, empowering teams to deploy code independently and efficiently.
+Took ownership of production jobs, monitoring their performance, resolving failures, and ensuring smooth monthly production releases.
+
+Impact on Members, Providers, and Sponsors:
+Enabled more efficient data delivery and availability, such as with the preference management and DNC file changes, which directly support member engagement and compliance.
+Continue support of mm project which directly impacts pharamcy and member engagements.
+Delivered reliable solutions for data processing and integration, enhancing provider and sponsor interactions through timely and accurate information delivery.
+
+Demonstrate our compliance standards:
+Consistently monitored production jobs to identify and mitigate risks, ensuring alignment with compliance requirements.
+Completed all compliance trainings on time, adhered to policies, and proactively raised and resolved issues to prevent non-compliance.
+
 
 Section 2: Goals
-In support of Healthfirst’s proactive approach to regulatory compliance and mission to our members, perform job responsibilities in full compliance with organization and department policies, procedures, and regulations.  Recognizing the obligation of each employee to report compliance issues, identify and raise issues promptly so the organization can prioritize and manage risk. Contribute to and implement effective controls and, where applicable, with timely and sustainable corrective actions designed to meet all regulatory requirements and timeframes and prevent future noncompliance.
+This year, I remained committed to Healthfirst's mission of delivering value to our members while ensuring compliance with organizational and regulatory requirements.
 
-
-I have done below during this year please use below points to write above two sections:
-
-1. Work with the team to migrate all 200+ glue jobs to latest version 4 to improve performance and utilize latest funcationality.
-2. explored open search technology and implements in glue job for formualry project in short period of time this involves getting source data from open fda and cleansing the data loading it to postgresql and open search.
-3. Helped/guided CJA team to learn AWS Glue and help in deployment process.
-4. Implemented preference management changes and dnc file changes.
-5. Helped CJA team to implement winback changes in different phases.
-6. implement custom scheduler for aws glue jobs this opened great flexibility to schedule job on demand and no need to wait for production deployments/releases.
-7. Worked with team to improve coding standards by implementing better logging of jobs, scheduling and naming conventions and developing lambda for reporting glue job failures and logging the status of each run into postgresql tables.
-8. Succesfully implemented provider fax and pharmacy fax by glue jobs that have complex design  getting sftp files from external sources and loading into alfresco system and logging scheduless for kitewheel.
-9. Found solution for twilio jobs to improve performance this greatly helped team to implement solution in 10s of twilio jobs this greatly reduced the time the jobs runs and helped to run jobs more frequently to get near real time data from twilio reports.
-10. Worked with i and o support team to integrate all data team 3 pipelines with service now selef service deployments this enabled the team to deploy code in all lower environments themself without any help from the deployment team this greatly reduced time to deploy code in lower environments.
-11. monitoring production jobs and taking appropriate actions or co ordinate other teams when jobs failed.
-14. Co ordinating with admin and deployment teams to successfly and smooth implementation of monthly production releases.
-
-
-No need to use all points here use more appropriate suitable points and provide review for Enterprise Value and Goals
+Successfully implemented solutions that adhered to regulatory and organizational requirements, including enhanced logging mechanisms for better audit readiness.
+Monitored production jobs daily, resolved failures, and collaborated with teams to ensure minimal disruptions and risks.
+Supported seamless monthly production releases, ensuring compliance and smooth operations.
+Developed a custom scheduler for AWS Glue jobs, ensuring accurate execution timelines and enhancing operational flexibility.
+Improved team efficiency by integrating data pipelines with ServiceNow self-service deployments, minimizing risks and reducing delays.
+Completed all compliance trainings on time and consistently followed organizational policies to ensure regulatory adherence.
