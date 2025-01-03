@@ -1,37 +1,12 @@
-Section 1: Enterprise Value
-This year, I successfully fulfilled my core job responsibilities while contributing to team success and aligning my efforts with Healthfirst's strategic priorities. Below is a summary of my accomplishments and how they reflect the Trailblazer culture:
-
-Contributing to Team Success:
-Led the migration of over 200+ AWS Glue jobs to version 4, enabling improved performance, reduced runtime, and adoption of the latest functionalities. This initiative significantly streamlined operations and enhanced job reliability.
-Provided guidance to the CJA team, empowering them to learn AWS Glue, adopt best practices, and helped with deployment processes. This fostered cross-team collaboration and knowledge sharing.
-Introduced a custom scheduler for AWS Glue jobs, delivering flexibility for scheduling jobs on demand. This eliminated dependency on production deployments for custom on demand schedules.
-
-Impact on Healthfirst's Strategic Priorities:
-Delivered impactful solutions for the Formulary Project, utilizing OpenSearch technology and integrating data pipelines with Open FDA, PostgreSQL, and OpenSearch within a short timeframe. These efforts aligned with Healthfirst's focus on innovation and operational excellence.
-Enhanced the efficiency of Twilio-related jobs by implementing a performance optimization solution. This reduced processing time, enabled near real-time data insights, and supported timely decision-making for critical operations.
-Delivered complex Provider and Pharmacy Fax workflows, ensuring efficient integration of external SFTP files with Alfresco and Kitewheel systems.
-
-Trailblazer Culture and Compliance Standards:
-Demonstrated innovation by improving coding standards through enhanced logging, scheduling, and naming conventions. Additionally, I developed a Lambda function for reporting job failures and logging statuses, driving process transparency and reliability.
-Fostered collaboration by integrating data pipelines with ServiceNow self-service deployments, empowering teams to deploy code independently and efficiently.
-Took ownership of production jobs, monitoring their performance, resolving failures, and ensuring smooth monthly production releases.
-
-Impact on Members, Providers, and Sponsors:
-Enabled more efficient data delivery and availability, such as with the preference management and DNC file changes, which directly support member engagement and compliance.
-Continue support of mm project which directly impacts pharamcy and member engagements.
-Delivered reliable solutions for data processing and integration, enhancing provider and sponsor interactions through timely and accurate information delivery.
-
-Demonstrate our compliance standards:
-Consistently monitored production jobs to identify and mitigate risks, ensuring alignment with compliance requirements.
-Completed all compliance trainings on time, adhered to policies, and proactively raised and resolved issues to prevent non-compliance.
-
-
-Section 2: Goals
-This year, I remained committed to Healthfirst's mission of delivering value to our members while ensuring compliance with organizational and regulatory requirements.
-
-Successfully implemented solutions that adhered to regulatory and organizational requirements, including enhanced logging mechanisms for better audit readiness.
-Monitored production jobs daily, resolved failures, and collaborated with teams to ensure minimal disruptions and risks.
-Supported seamless monthly production releases, ensuring compliance and smooth operations.
-Developed a custom scheduler for AWS Glue jobs, ensuring accurate execution timelines and enhancing operational flexibility.
-Improved team efficiency by integrating data pipelines with ServiceNow self-service deployments, minimizing risks and reducing delays.
-Completed all compliance trainings on time and consistently followed organizational policies to ensure regulatory adherence.
+select * from kwdm.mm_base mb 
+where mb.update_datetime 
+    between
+        CASE WHEN EXTRACT(QUARTER FROM current_date) = 1 THEN DATE_TRUNC('quarter', DATE_TRUNC('year', current_date) - INTERVAL '1 day') - INTERVAL '13 days'
+            ELSE DATE_TRUNC('quarter', current_date - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '17 days'
+        END
+    and
+        CASE WHEN EXTRACT(QUARTER FROM current_date) = 1 THEN DATE_TRUNC('quarter', DATE_TRUNC('year', current_date) - INTERVAL '1 day')
+            ELSE DATE_TRUNC('quarter', current_date - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '30 days'
+        END
+and mb.status = 'OPEN'
+and mb.reason = 'NEW'
