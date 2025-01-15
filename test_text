@@ -1,12 +1,6 @@
-select * from kwdm.mm_base mb 
-where mb.update_datetime 
-    between
-        CASE WHEN EXTRACT(QUARTER FROM current_date) = 1 THEN DATE_TRUNC('quarter', DATE_TRUNC('year', current_date) - INTERVAL '1 day') - INTERVAL '13 days'
-            ELSE DATE_TRUNC('quarter', current_date - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '17 days'
-        END
-    and
-        CASE WHEN EXTRACT(QUARTER FROM current_date) = 1 THEN DATE_TRUNC('quarter', DATE_TRUNC('year', current_date) - INTERVAL '1 day')
-            ELSE DATE_TRUNC('quarter', current_date - INTERVAL '3 months') + INTERVAL '2 months' + INTERVAL '30 days'
-        END
-and mb.status = 'OPEN'
-and mb.reason = 'NEW'
+Last year you helped us to onboard our cicd pipelines to snow. At that time you identified the pipeline cde-glue-integration already exist(on boarded?)
+We haven’t used this pipeline as of now for auto deployments through snow.
+We will start using this pipeline and we are testing this and noticed that this pipeline is not working in integration with snow.
+In SNOW Version displays as No matches found.
+Can you please help us to fix the issue to onboard pipeline to snow.
+I opened ticket for this: xxxx
