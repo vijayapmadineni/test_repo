@@ -1,32 +1,53 @@
-import os
-from smbprotocol import smbclient
-from smbprotocol import transport
+from smbprotocol.connection import Connection
+from smbprotocol.session import Session
+from smbprotocol.tree import TreeConnect
+from smbprotocol.file import Open, CreateDisposition, ShareAccess, FilePipePrinterAccessMask
 
 # FSx Configuration
-domain = "YOUR_DOMAIN"           # Replace with your domain
-username = "YOUR_USERNAME"       # Replace with your username
-password = "YOUR_PASSWORD"       # Replace with your password
-fsx_ip = "10.152.10.123"         # FSx IP
-share_name = "share_1"           # Share name
-folder_name = "test_folder"      # Folder to list files from
+fsx_ip = "10.152.10.123"
+share_name = "share_1"
+folder_name = "test_folder"
+domain = "YOUR_DOMAIN"
+username = "YOUR_USERNAME"
+password = "YOUR_PASSWORD"
 
-# Setup SMBProtocol (requires domain, username, and password)
-smbclient.ClientConfig(username=username, password=password, domain=domain)
-smbclient.register_session(fsx_ip, username=username, password=password)
+# UNC path
+unc_path = f"\\\\{fsx_ip}\\{share_name}"
 
+# Function to list files
 def list_files_in_share():
     try:
-        # Build the UNC path to the folder
-        share_path = f"\\\\{fsx_ip}\\{share_name}\\{folder_name}"
+        # Create an SMB connection
+        connection = Connection(uuid="", username=username, password=password, server=fsx_ip, port=445)
+        connection.connect()
+        
+        # Start a session
+        session = Session(connection, username, password, domain)
+        session.connect()
+        
+        # Connect to the tree (share)
+        tree = TreeConnect(session, unc_path)
+        tree.connect()
+        
+        # Open the folder
+        folder = Open(tree, folder_name, access_mask=FilePipePrinterAccessMask.GENERIC_READ)
+        folder.create(CreateDisposition.FILE_OPEN, ShareAccess.FILE_SHARE_READ)
+        
+        # List files
+        files = folder.query_directory()
+        for file_info in files:
+            print(f"File: {file_info['file_name']}")
+        
+        # Close the folder and session
+        folder.close()
+        tree.disconnect()
+        session.disconnect()
+        connection.disconnect()
 
-        # List files in the folder
-        files = smbclient.listdir(share_path)
-        print(f"Files in {folder_name}: {files}")
-        return files
     except Exception as e:
-        print(f"Error listing files: {e}")
+        print(f"Error accessing the share: {e}")
         raise
 
-# Main execution
+# Main Execution
 if __name__ == "__main__":
     list_files_in_share()
