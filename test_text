@@ -1,86 +1,32 @@
 import os
-import subprocess
+from smbprotocol import smbclient
+from smbprotocol import transport
 
 # FSx Configuration
-fsx_ip = "10.152.10.123"
-share_name = "share_1"
-folder_name = "test_folder"
-mount_point = "/tmp/mounted_fsx"  # Local mount point within Glue runtime
+domain = "YOUR_DOMAIN"           # Replace with your domain
+username = "YOUR_USERNAME"       # Replace with your username
+password = "YOUR_PASSWORD"       # Replace with your password
+fsx_ip = "10.152.10.123"         # FSx IP
+share_name = "share_1"           # Share name
+folder_name = "test_folder"      # Folder to list files from
 
-fsx_username = "YOUR_FSX_USERNAME"  # Replace with FSx username
-fsx_password = "YOUR_FSX_PASSWORD"  # Replace with FSx password
+# Setup SMBProtocol (requires domain, username, and password)
+smbclient.ClientConfig(username=username, password=password, domain=domain)
+smbclient.register_session(fsx_ip, username=username, password=password)
 
-def mount_fsx_share():
-    """
-    Mount the FSx share using mount.cifs (no sudo).
-    """
+def list_files_in_share():
     try:
-        # Ensure the mount point exists
-        if not os.path.exists(mount_point):
-            os.makedirs(mount_point)
+        # Build the UNC path to the folder
+        share_path = f"\\\\{fsx_ip}\\{share_name}\\{folder_name}"
 
-        # Mount command
-        fsx_path = f"//{fsx_ip}/{share_name}"
-        mount_command = [
-            "mount",
-            "-t",
-            "cifs",
-            fsx_path,
-            mount_point,
-            "-o",
-            f"username={fsx_username},password={fsx_password},dir_mode=0777,file_mode=0777"
-        ]
-
-        # Execute mount command
-        subprocess.run(mount_command, check=True)
-        print(f"Successfully mounted {fsx_path} to {mount_point}")
-    except Exception as e:
-        print(f"Failed to mount FSx share: {str(e)}")
-        raise
-
-def unmount_fsx_share():
-    """
-    Unmount the FSx share.
-    """
-    try:
-        if os.path.ismount(mount_point):
-            subprocess.run(["umount", mount_point], check=True)
-            print(f"Unmounted {mount_point}")
-        else:
-            print(f"{mount_point} is not mounted")
-    except Exception as e:
-        print(f"Failed to unmount FSx share: {str(e)}")
-
-def list_files_in_folder(folder_path):
-    """
-    List files in a given folder path.
-    """
-    try:
-        files = os.listdir(folder_path)
-        print(f"Files in {folder_path}: {files}")
+        # List files in the folder
+        files = smbclient.listdir(share_path)
+        print(f"Files in {folder_name}: {files}")
         return files
     except Exception as e:
-        print(f"Failed to list files: {str(e)}")
+        print(f"Error listing files: {e}")
         raise
 
-# Main Execution
+# Main execution
 if __name__ == "__main__":
-    try:
-        # Mount the FSx share
-        mount_fsx_share()
-
-        # Check for test folder
-        test_folder_path = os.path.join(mount_point, folder_name)
-        if os.path.exists(test_folder_path):
-            print(f"Folder exists: {test_folder_path}")
-
-            # List files in the test folder
-            files = list_files_in_folder(test_folder_path)
-            for file in files:
-                print(f"File: {file}")
-        else:
-            print(f"Folder does not exist: {test_folder_path}")
-            raise FileNotFoundError(f"Folder does not exist: {test_folder_path}")
-    finally:
-        # Unmount FSx share
-        unmount_fsx_share()
+    list_files_in_share()
