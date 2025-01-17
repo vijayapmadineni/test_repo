@@ -1,13 +1,5 @@
 import os
 import subprocess
-import shutil
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-
-# Initialize Spark and Glue Context
-sc = SparkContext()
-glueContext = GlueContext(sc)
-logger = glueContext.get_logger()
 
 # FSx Configuration
 fsx_ip = "10.152.10.123"
@@ -15,23 +7,21 @@ share_name = "share_1"
 folder_name = "test_folder"
 mount_point = "/tmp/mounted_fsx"  # Local mount point within Glue runtime
 
-# FSx Credentials
-fsx_username = "YOUR_FSX_USERNAME"  # Replace with your FSx username
-fsx_password = "YOUR_FSX_PASSWORD"  # Replace with your FSx password
+fsx_username = "YOUR_FSX_USERNAME"  # Replace with FSx username
+fsx_password = "YOUR_FSX_PASSWORD"  # Replace with FSx password
 
 def mount_fsx_share():
     """
-    Mount the FSx share dynamically using mount.cifs.
+    Mount the FSx share using mount.cifs (no sudo).
     """
     try:
-        # Ensure the mount point directory exists
+        # Ensure the mount point exists
         if not os.path.exists(mount_point):
             os.makedirs(mount_point)
 
-        # Construct the mount command
+        # Mount command
         fsx_path = f"//{fsx_ip}/{share_name}"
         mount_command = [
-            "sudo",
             "mount",
             "-t",
             "cifs",
@@ -41,63 +31,56 @@ def mount_fsx_share():
             f"username={fsx_username},password={fsx_password},dir_mode=0777,file_mode=0777"
         ]
 
-        # Execute the mount command
+        # Execute mount command
         subprocess.run(mount_command, check=True)
-        logger.info(f"Successfully mounted {fsx_path} to {mount_point}")
+        print(f"Successfully mounted {fsx_path} to {mount_point}")
     except Exception as e:
-        logger.error(f"Failed to mount FSx share: {str(e)}")
+        print(f"Failed to mount FSx share: {str(e)}")
         raise
 
 def unmount_fsx_share():
     """
-    Unmount the FSx share after execution.
+    Unmount the FSx share.
     """
     try:
         if os.path.ismount(mount_point):
-            subprocess.run(["sudo", "umount", mount_point], check=True)
-            logger.info(f"Unmounted {mount_point}")
+            subprocess.run(["umount", mount_point], check=True)
+            print(f"Unmounted {mount_point}")
         else:
-            logger.warning(f"{mount_point} is not mounted")
+            print(f"{mount_point} is not mounted")
     except Exception as e:
-        logger.error(f"Failed to unmount FSx share: {str(e)}")
+        print(f"Failed to unmount FSx share: {str(e)}")
 
 def list_files_in_folder(folder_path):
     """
-    List all files in the given folder path.
+    List files in a given folder path.
     """
     try:
         files = os.listdir(folder_path)
-        logger.info(f"Files in {folder_path}: {files}")
+        print(f"Files in {folder_path}: {files}")
         return files
     except Exception as e:
-        logger.error(f"Failed to list files in folder: {folder_path}. Error: {str(e)}")
+        print(f"Failed to list files: {str(e)}")
         raise
 
-def main():
+# Main Execution
+if __name__ == "__main__":
     try:
         # Mount the FSx share
         mount_fsx_share()
 
-        # Construct the full path to the test folder
+        # Check for test folder
         test_folder_path = os.path.join(mount_point, folder_name)
-
-        # Check if the folder exists
         if os.path.exists(test_folder_path):
-            logger.info(f"Folder exists: {test_folder_path}")
+            print(f"Folder exists: {test_folder_path}")
 
-            # List files in the folder
+            # List files in the test folder
             files = list_files_in_folder(test_folder_path)
-
-            # Print file names
             for file in files:
                 print(f"File: {file}")
         else:
-            logger.error(f"Folder does not exist: {test_folder_path}")
+            print(f"Folder does not exist: {test_folder_path}")
             raise FileNotFoundError(f"Folder does not exist: {test_folder_path}")
     finally:
-        # Unmount the FSx share
+        # Unmount FSx share
         unmount_fsx_share()
-
-# Entry Point
-if __name__ == "__main__":
-    main()
