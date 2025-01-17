@@ -1,6 +1,49 @@
-Last year you helped us to onboard our cicd pipelines to snow. At that time you identified the pipeline cde-glue-integration already exist(on boarded?)
-We haven’t used this pipeline as of now for auto deployments through snow.
-We will start using this pipeline and we are testing this and noticed that this pipeline is not working in integration with snow.
-In SNOW Version displays as No matches found.
-Can you please help us to fix the issue to onboard pipeline to snow.
-I opened ticket for this: xxxx
+import os
+import boto3
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+
+# Initialize Spark and Glue Context
+sc = SparkContext()
+glueContext = GlueContext(sc)
+logger = glueContext.get_logger()
+
+# FSx Configuration
+fsx_ip = "10.152.10.123"
+share_name = "share_1"
+folder_name = "test_folder"
+
+# Mount FSx Share Path
+fsx_mount_path = f"\\\\{fsx_ip}\\{share_name}"
+test_folder_path = os.path.join(fsx_mount_path, folder_name)
+
+def list_files_in_folder(folder_path):
+    """
+    List all files in the given folder path.
+    """
+    try:
+        files = os.listdir(folder_path)
+        logger.info(f"Files in {folder_path}: {files}")
+        return files
+    except Exception as e:
+        logger.error(f"Failed to list files in folder: {folder_path}. Error: {str(e)}")
+        raise
+
+def main():
+    # Check if the folder exists
+    if os.path.exists(test_folder_path):
+        logger.info(f"Folder exists: {test_folder_path}")
+        
+        # List files
+        files = list_files_in_folder(test_folder_path)
+        
+        # Print the files
+        for file in files:
+            print(f"File: {file}")
+    else:
+        logger.error(f"Folder does not exist: {test_folder_path}")
+        raise FileNotFoundError(f"Folder does not exist: {test_folder_path}")
+
+# Entry Point
+if __name__ == "__main__":
+    main()
