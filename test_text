@@ -1,7 +1,4 @@
-from smbprotocol.connection import Connection
-from smbprotocol.session import Session
-from smbprotocol.tree import TreeConnect
-from smbprotocol.file import Open, CreateDisposition, ShareAccess, FilePipePrinterAccessMask
+import smbclient
 
 # FSx Configuration
 fsx_ip = "10.152.10.123"
@@ -11,43 +8,17 @@ domain = "YOUR_DOMAIN"
 username = "YOUR_USERNAME"
 password = "YOUR_PASSWORD"
 
-# UNC path
-unc_path = f"\\\\{fsx_ip}\\{share_name}"
+# Configure SMB Client
+smbclient.ClientConfig(username=username, password=password, domain=domain)
 
-# Function to list files
 def list_files_in_share():
     try:
-        # Create an SMB connection
-        connection = Connection(uuid="", username=username, password=password, server=fsx_ip, port=445)
-        connection.connect()
-        
-        # Start a session
-        session = Session(connection, username, password, domain)
-        session.connect()
-        
-        # Connect to the tree (share)
-        tree = TreeConnect(session, unc_path)
-        tree.connect()
-        
-        # Open the folder
-        folder = Open(tree, folder_name, access_mask=FilePipePrinterAccessMask.GENERIC_READ)
-        folder.create(CreateDisposition.FILE_OPEN, ShareAccess.FILE_SHARE_READ)
-        
-        # List files
-        files = folder.query_directory()
-        for file_info in files:
-            print(f"File: {file_info['file_name']}")
-        
-        # Close the folder and session
-        folder.close()
-        tree.disconnect()
-        session.disconnect()
-        connection.disconnect()
-
+        share_path = f"\\\\{fsx_ip}\\{share_name}\\{folder_name}"
+        files = smbclient.listdir(share_path)
+        print(f"Files in {folder_name}: {files}")
     except Exception as e:
-        print(f"Error accessing the share: {e}")
+        print(f"Error listing files: {e}")
         raise
 
-# Main Execution
 if __name__ == "__main__":
     list_files_in_share()
