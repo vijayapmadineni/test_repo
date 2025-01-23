@@ -1,77 +1,427 @@
-import smbclient
-import boto3
 import os
+import pandas
+import sys
+import uuid
+import paramiko
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+import pyspark.sql.functions as sf
+from pyspark.sql.types import *
+import boto3
+import psycopg2
+from datetime import datetime,timedelta
+import pytz
+import logging
+import time
+from pyspark.sql.functions import lit, unix_timestamp, rtrim, trim, when, regexp_replace
+from pyspark.sql.functions import to_date, to_timestamp
+from pyspark.sql import Row
+import re
+import json
+import boto3
+from botocore.exceptions import ClientError
+from io import BytesIO
+import requests
 
-# S3 Configuration
-s3_bucket = "my_s3_bucket"
-s3_outgoing_key = "vendor/outgoing/out_going_file.txt"
-s3_incoming_key = "vendor/incoming/file_incoming.txt"
+#**********************************Args************************************
+## @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
 
-# FSx Configuration
-fsx_ip = "10.152.10.123"
-share_name = "share_1"
-folder_name = "test_folder"
-domain = "YOUR_DOMAIN"
-username = "YOUR_USERNAME"
-password = "YOUR_PASSWORD"
+GLUE_CONNECTION_NAME_CDM = 'CJA_CONTACT_DATA_MART'
+#job_name='cde_si_job_sdoh_to_kwdm'
+job_name=args['JOB_NAME']
+job_name='job_sdoh_to_kwdm'
 
-# Temporary Local Paths
-local_outgoing_file = "/tmp/out_going_file.txt"
-local_incoming_file = "/tmp/file_incoming.txt"
+logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logger = logging.getLogger(job_name)
+logger.setLevel(logging.INFO)
 
-# Initialize S3 Client
-s3 = boto3.client("s3")
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
 
-# Configure SMB Client
-smbclient.ClientConfig(username=username, password=password, domain=domain)
+#**********************************Connections & Data Prep************************************
+tz_NY = pytz.timezone('US/Eastern')
+datetime_est = datetime.now(tz_NY)
 
-def upload_to_smb_from_s3():
+
+#date time
+date_today = datetime.now().strftime('%Y%m%d')
+date_today_ny = datetime.now(tz_NY).strftime('%Y%m%d')
+datetime_NY = datetime.now(tz_NY).strftime("%Y-%m-%d %H:%M:%S")
+epoch_time = int(datetime_est.timestamp()) 
+# to upload file to SFTP
+def upload_s3_file_to_sftp(s3, sftp, bucket, prefix, file_name, sftp_path):
+    sftp_file = os.path.join(sftp_path, file_name)
+    local_file = os.path.join('/tmp', file_name)
+    s3.download_file(bucket, f'{prefix}/{file_name}', local_file)
+    sftp.put(local_file, sftp_file)
+
+def get_secret():
+
+    secret_name = "cde-si-secret/hf_sftp_svc_hf_cde_tx"
+    region_name = "us-east-1"
+
+    # Create a Secrets Manager client
+    session = boto3.session.Session()
+    client = session.client(
+        service_name='secretsmanager',
+        region_name=region_name
+    )
+
     try:
-        # Download file from S3 to local
-        s3.download_file(s3_bucket, s3_outgoing_key, local_outgoing_file)
-        print(f"Downloaded {s3_outgoing_key} from S3 to {local_outgoing_file}")
+        get_secret_value_response = client.get_secret_value(
+            SecretId=secret_name
+        )
+    except ClientError as e:
+        raise e
+    secret = get_secret_value_response['SecretString']
+    return json.loads(secret)
+    
 
-        # Upload local file to SMB
-        smb_path = f"\\\\{fsx_ip}\\{share_name}\\{folder_name}\\out_going_file.txt"
-        with smbclient.open_file(smb_path, mode="wb") as smb_file:
-            with open(local_outgoing_file, "rb") as local_file:
-                smb_file.write(local_file.read())
-        print(f"Uploaded {local_outgoing_file} to SMB at {smb_path}")
+SFTP_credentials = get_secret()
 
-    except Exception as e:
-        print(f"Error uploading to SMB: {e}")
-        raise
-    finally:
-        # Clean up temporary file
-        if os.path.exists(local_outgoing_file):
-            os.remove(local_outgoing_file)
+SFTP_Hostname = SFTP_credentials["host"]
+SFTP_Username = SFTP_credentials["username"]
+SFTP_Password = SFTP_credentials["password"]
+SFTP_Port = 22
+SFTP_Packetsize = 1024
+#Glue Connection
+def get_glue_connection(connectionName):
+    glueClient = boto3.client('glue', region_name='us-east-1')
+    response = glueClient.get_connection(Name=connectionName,HidePassword=False)
+    creds = {}
+    creds['username'] = response['Connection']['ConnectionProperties']['USERNAME']
+    creds['password'] = response['Connection']['ConnectionProperties']['PASSWORD']
+    creds['url'] = response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
+    return creds
+def cdm_execute_qry_select(qry):
+    logger.info(f"Start: Execute: {qry}")
+    conn1 = psycopg2.connect(database="contact_data_mart", user=cdm_username, password=cdm_password, host=cdm_host, port=cdm_port)
+    cur1 = conn1.cursor()
+    cur1.execute(qry)
+    rows = cur1.fetchone()
+    conn1.commit()
+    cur1.close()
+    conn1.close()
+    logger.info(f"End: Execute: {qry}")
+    return rows 
+def cdm_execute_qry(qry):
+        logger.info(f"Start: Execute: {qry}")
+        conn1 = psycopg2.connect(database="contact_data_mart", user=cdm_username, password=cdm_password, host=cdm_host, port=cdm_port)
+        cur1 = conn1.cursor()
+        cur1.execute(qry)
+        row_cnt=cur1.rowcount
+        conn1.commit()
+        cur1.close()
+        conn1.close()
+        logger.info(f"End: Execute: {qry}")
+        return row_cnt
+    
+#get CDM creds
+logger.info("Start: Get cdm Credentials")
+cdm_creds = get_glue_connection(GLUE_CONNECTION_NAME_CDM)
+cdm_username = cdm_creds['username']
+cdm_password = cdm_creds['password']
+cdm_url = cdm_creds['url']
+host_start_pos = cdm_url.find("//")+2
+host_end_pos = cdm_url.rfind(":")
+port_start_pos = host_end_pos+1
+port_end_pos = host_end_pos+5
+cdm_host = cdm_url[host_start_pos:host_end_pos]
+cdm_port = cdm_url[port_start_pos:port_end_pos]
+logger.info("End: Get cdm Credentials")
 
-def download_from_smb_to_s3():
-    try:
-        # Define SMB file path
-        smb_path = f"\\\\{fsx_ip}\\{share_name}\\{folder_name}\\file_incoming.txt"
 
-        # Download file from SMB to local
-        with smbclient.open_file(smb_path, mode="rb") as smb_file:
-            with open(local_incoming_file, "wb") as local_file:
-                local_file.write(smb_file.read())
-        print(f"Downloaded {smb_path} to {local_incoming_file}")
+#Connect to SFTP 
+def get_sftp_connection(hostname,port,username,password):
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(hostname=hostname, port=port, username=username, password=password)
+    transport=client.get_transport()
+    transport.default_max_packet_size=SFTP_Packetsize
+    sftp = transport.open_sftp_client()
+    print("connection established")
+    return sftp
+    
+def find_file_by_date(sftp, directory, date_pattern):
+    matched_files = []
+    print('sftp.listdir_attr(directory)', sftp.listdir_attr(directory))
+    for file_attr in sftp.listdir_attr(directory):
+        filename = file_attr.filename
+        print('filename', filename)
+        print('re.match(date_pattern, filename)', re.match(date_pattern, filename))
+        if re.match(date_pattern, filename):
+            matched_files.append((filename, file_attr.st_mtime))
+    print('matched_files', matched_files)
+    if matched_files:
+        matched_files.sort(key = lambda x:x[1])
+        return matched_files[0][0]
+    return None
+def get_sftp_file(sftp, filePath):
+        file_io = BytesIO()
+        sftp.getfo(filePath, file_io)
+        file_io.seek(0)
+        file_content = file_io.read().decode('utf-8')
+        src_count = file_content.count('\n')
+        print('src_count',src_count)
+        return file_content
+parameters = cdm_execute_qry_select(f"select parameters from kwdm.glue_journey_parameters where job_name = '{job_name}'")
 
-        # Upload local file to S3
-        s3.upload_file(local_incoming_file, s3_bucket, s3_incoming_key)
-        print(f"Uploaded {local_incoming_file} to S3 at {s3_incoming_key}")
+purpose = ''
+file_destination_mapping = {}
 
-    except Exception as e:
-        print(f"Error downloading from SMB: {e}")
-        raise
-    finally:
-        # Clean up temporary file
-        if os.path.exists(local_incoming_file):
-            os.remove(local_incoming_file)
+for parameter in parameters:
+    purpose = parameter["purpose"]
+    batch_size = parameter["batch_size"]
+    sftp_path = parameter["input_file_path"]["SDOH_FTP"]
+    transperfect_path = parameter["input_file_path"]["Transperfect_FTP"]
+    s3_bucket = parameter["input_file_path"]["s3_bucket"]
+try:
+    # get the file from SFTP    
+    sftp_file_name =rf"SDOH_Outreach_CCO_List.*\.csv" 
+    SFTP_filePath = sftp_path
+    SFTP_file_pattern = rf"SDOH_Outreach_CCO_List.*\.csv" 
+    s3_file_path = f'''s3://{s3_bucket}/acqueon-archive/sdoh/'''
+    s3_client = boto3.client('s3')
+    #establish connection
+    sftp = get_sftp_connection(SFTP_Hostname, SFTP_Port, SFTP_Username, SFTP_Password)
+    filename = find_file_by_date(sftp, SFTP_filePath, SFTP_file_pattern)
+    if filename:
+        file_path = f"{SFTP_filePath}/{filename}"
+        file_content_bytes = get_sftp_file(sftp, file_path)
+    SFTP_file_to_delete = f"{SFTP_filePath}/{filename}"
+    s3_file_name = filename 
+    #s3_file_name = f"SDOH_Outreach_CCO_ List_{date_today_ny}.csv"
+    #read the file from sftp
+    #file_content = get_sftp_file(sftp, SFTP_filePath)
+    #file_content_bytes = file_content.encode('utf-8')
+except Exception as e:
+    print(e)
+    print('Closing SFTP connection. Finishing Job.')
+    sftp.close()
+    #raise e
+    job.commit()
+else:
+    #Archive the file on S3
+    s3_resource = boto3.resource('s3')
+    s3_key = f'acqueon-archive/sdoh/{s3_file_name}' 
+    response = s3_client.put_object(Key = s3_key, Bucket=s3_bucket , Body = file_content_bytes)
 
-if __name__ == "__main__":
-    # Upload file from S3 to SMB
-    upload_to_smb_from_s3()
+    print('s3 file uploaded', response)
 
-    # Download file from SMB to S3
-    download_from_smb_to_s3()
+    #**********************************Data Processing************************************
+    #Step1: Read data from file.
+    #Prepare Dataframe from s3 file
+
+    DataSource0 = spark.read.format('csv').option('header', 'true').load(f'''{s3_file_path}{s3_file_name}''')
+    if DataSource0.count() == 0:
+        print('file does not exist')
+
+    DataSource0 = DataSource0.toDF(*[c.strip().lower().replace(" ","_") for c in DataSource0.columns])
+    source_count = DataSource0.count()
+    logger.info("Start: Insert job start entry into aws_glue_job_log")
+    job_start_dtm = datetime.now(tz_NY).strftime("%Y-%m-%d %H:%M:%S")
+    cdm_execute_qry(f"Insert into kwdm.aws_glue_job_log (job_status, job_name, source_count, start_time) values('started', '{job_name}', '{source_count}','{job_start_dtm}');")
+    logger.info("End: Insert job start entry into aws_glue_job_log")
+
+    #step2: Prepart DF from s3 file 
+    DataSource0 = DataSource0.select([
+    when(trim(sf.col(column)) == "", None)
+    .otherwise(trim(sf.col(column)))
+    .alias(column)
+    for column in DataSource0.columns
+    ])
+    data_with_id = DataSource0.withColumn("create_date", sf.lit(datetime_NY).cast("timestamp"))\
+                              .withColumn("update_date", sf.lit(datetime_NY).cast("timestamp"))\
+                              .withColumnRenamed("company_no", "companycd")\
+                              .withColumnRenamed("phone_primary", "primary_phone")\
+                              .withColumnRenamed("phone_secondary", "secondary_phone")\
+                              .withColumnRenamed("address_line_1", "address_line1")\
+                              .withColumnRenamed("address_line_2", "address_line2")\
+                              .withColumnRenamed("phone_home", "home_phone")\
+                              .withColumn("recert_date", to_date(sf.col("recert_date"), "MM/dd/yyyy"))\
+                              .withColumn("dob", to_date(sf.col("dob"), "MM/dd/yyyy"))\
+                              .alias("dwi")
+    data_with_id.show()
+    #step3: Populate sdoh history
+    
+    data_with_id.write\
+        .format("jdbc")\
+        .option("url" , cdm_url)\
+        .option("driver", "org.postgresql.Driver")\
+        .option("dbtable", "kwdm.sdoh_history")\
+        .option("user", cdm_username)\
+        .option("password", cdm_password)\
+        .mode("append")\
+        .save()
+    
+    sdoh_history_enriched = f'''(
+    with sdoh_history_data as (
+    select sh.id as sdoh_history_id, sh.outreach_name, sh.member_master_id,sh.member_id, sh.subscriber_no,
+    sh.member_first_name, sh.member_last_name, sh.lob, sh.eligcat, sh.companycd, sh.recert_date, sh.dob, sh.address_line1, sh.address_line2,
+    sh.city, sh.state,  sh.zip_code,sh.primary_phone,sh.secondary_phone
+    from kwdm.sdoh_history sh
+    where sh.create_date= '{datetime_NY}'::timestamp
+    ),
+    pmm as (
+    select "language" ,customer_id_hf__c from kwdm.preference_management_master
+    where purpose ='{purpose}' and customer_id_hf__c in (select member_master_id from sdoh_history_data )
+    )
+    select sdoh_history_id, shd.outreach_name, shd.member_master_id,shd.member_id, shd.subscriber_no,
+    shd.member_first_name, shd.member_last_name, shd.lob,shd.eligcat,shd.companycd,case when UPPER(pmm."language") = 'CANTONESE'  then '02' when UPPER(pmm."language") = 'RUSSIAN'  then '29' when UPPER(pmm."language") = 'SPANISH'  then '31' when UPPER(pmm."language") = 'ENGLISH'  then '67'
+    when UPPER(pmm."language") = 'MANDARIN'  then '89' ELSE '67' end as langcd,case when (coalesce(trim(pmm."language"),'')='') then 'ENGLISH'
+    else UPPER(trim(pmm."language")) end as "language",shd.primary_phone,shd.secondary_phone,shd.recert_date,shd.dob,shd.address_line1, shd.address_line2,
+    shd.city, shd.state,  shd.zip_code,'{datetime_NY}'::timestamp as create_date, '{datetime_NY}'::timestamp as update_date from sdoh_history_data shd left join pmm on 
+    shd.member_master_id = pmm.customer_id_hf__c) as sdoh_history_enriched'''
+
+    sdoh_history_enriched = spark.read.format("jdbc").option("url" , cdm_url)\
+        .option("driver", "org.postgresql.Driver")\
+        .option("dbtable", sdoh_history_enriched)\
+        .option("user", cdm_username)\
+        .option("batchsize", "1000")\
+        .option("password", cdm_password)\
+        .load()\
+    
+    sdoh_history_enriched_cnt = sdoh_history_enriched.count()
+    print(f'sdoh_history_enriched_cnt: {sdoh_history_enriched_cnt}')
+    sdoh_history_enriched.printSchema()
+    
+    # step 4:populate sdoh master
+#     sdoh_history_enriched_df = sdoh_history_enriched[sdoh_history_enriched['language'].isin(['CANTONESE', 'MANDARIN','RUSSIAN'])]
+#     transperfect_df = sdoh_history_enriched[sdoh_history_enriched['language'].isin(['SPANISH','ENGLISH'])]
+#     columns_to_drop = ['sdoh_history_id', 'create_date','update_date']
+#     transperfect_df = transperfect_df.drop(*columns_to_drop)
+#     transperfect_df = transperfect_df.repartition(1)
+#     transperfect_df.show()
+#     sdoh_history_enriched_df.write.format("jdbc")\
+#         .option("url" , cdm_url)\
+#         .option("driver", "org.postgresql.Driver")\
+#         .option("dbtable", "kwdm.sdoh_master")\
+#         .option("user", cdm_username)\
+#         .option("password", cdm_password)\
+#         .mode("append").save()
+
+#     ny_tz = pytz.timezone('US/Eastern')
+#     ny_dtm = datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+#     #step 5: Populate acqueon_contact_status
+    
+#     sdoh_master_data  = (f'''(with sdoh_data as (
+#     select 
+#     	member_id as acqueon_id,
+#     	id as master_id,
+#     	'staged' as contact_status,
+#     	'SDOH' as campaign,
+#     	row_number() over(
+#     	order by id desc) rn
+#     from
+#     	sdoh_master where create_date = '{datetime_NY}'::timestamp )
+#     select
+#     	acqueon_id,
+#     	master_id,
+#     	contact_status,
+#     	campaign,
+#     	cast(ceil(rn / {batch_size}) AS INT) as batch,
+#     	'{datetime_NY}'::timestamp  as insert_date,
+#     	'{datetime_NY}'::timestamp  as update_date
+#     from
+#     	sdoh_data)as sdoh_master_data''')
+
+#     acqueon_contact_status_df =  spark.read.format("jdbc").option("url" , cdm_url)\
+#                                       .option("driver", "org.postgresql.Driver")\
+#                                       .option("dbtable", sdoh_master_data)\
+#                                       .option("user", cdm_username)\
+#                                       .option("password", cdm_password)\
+#                                       .load()\
+
+#     acqueon_contact_status_df.write.format("jdbc")\
+#         .option("url" , cdm_url)\
+#         .option("driver", "org.postgresql.Driver")\
+#         .option("dbtable", "kwdm.acqueon_contact_status")\
+#         .option("user", cdm_username)\
+#         .option("password", cdm_password)\
+#         .mode("append").save()
+
+# #step 6: populate jo table
+#     acqueon_data_touchpoint = (f'''(with batch_data as(
+# 	select batch as message_payload, 
+# 	'{datetime_NY}'::timestamp + (interval '10 minutes' * (row_number() over(order by batch) -1 )) as schedule_date,
+# 	'{datetime_NY}'::timestamp + (interval '30 minutes' * (row_number() over(order by batch) -1 )) as contact_result_schedule_date
+# 	from (select distinct batch from acqueon_contact_status acs where campaign = 'SDOH' and insert_date::timestamp = '{datetime_NY}') batch_schedule
+#     ),
+#     jo_data as (select 
+#     	message_payload, 
+#     	'{datetime_NY}'::timestamp as created_dt,
+#     	schedule_date as scheduled_dt, 
+#     	schedule_date as actual_scheduled_dt,
+#     	'CALL-LIVE' as channel,
+#     	'scheduled' as message_status,
+#     	'SDOH' as journey_name,
+#     	'SDOHCall' as hf_member_num_cd,
+#     	'loadacqueon' as sub_journey_name,
+#     	'sdoh_batch_upload' as message_type
+#     	from batch_data
+#     union	
+#     select 
+#     	message_payload, 
+#     	'{datetime_NY}'::timestamp as created_dt,
+#     	contact_result_schedule_date +(interval '20 minutes') as scheduled_dt, 
+#     	contact_result_schedule_date +(interval '20 minutes') as actual_scheduled_dt,
+#     	'CALL-LIVE' as channel,
+#     	'scheduled' as message_status,
+#     	'SDOH' as journey_name,
+#     	'SDOHCall' as hf_member_num_cd,
+#     	'contactresults' as sub_journey_name,
+#     	'sdoh_contact_status' as message_type
+#     	from batch_data)
+#     select * from jo_data) as acqueon_data_touchpoint''')
+
+
+#     acqueon_data_touchpoint_df =  spark.read.format("jdbc").option("url" , cdm_url)\
+#                                       .option("driver", "org.postgresql.Driver")\
+#                                       .option("dbtable", acqueon_data_touchpoint)\
+#                                       .option("user", cdm_username)\
+#                                       .option("password", cdm_password)\
+#                                       .load()\
+
+#     acqueon_data_touchpoint_df.show()
+#     acqueon_data_touchpoint_df.write.format("jdbc")\
+#         .option("url" , cdm_url)\
+#         .option("driver", "org.postgresql.Driver")\
+#         .option("dbtable", "kwdm.journey_orchestration")\
+#         .option("user", cdm_username)\
+#         .option("password", cdm_password)\
+#         .mode("append").save()
+
+#     #step7: place transperfect file to sftp
+#     s3_client = boto3.client('s3')
+#     s3_filepath = f"s3://{s3_bucket}/acqueon-archive/sdoh/transperfect_files/MS_EP_SDOH_Outreach_{date_today_ny}.csv"
+#     s3_key = f"acqueon-archive/sdoh/transperfect_files/MS_EP_SDOH_Outreach_{date_today_ny}.csv"
+#     s3_prefix = f"acqueon-archive/sdoh/transperfect_files"
+#     file_name = f"MS_EP_SDOH_Outreach_{date_today_ny}.csv"
+#     transperfect_csv=transperfect_df.toPandas().to_csv(s3_filepath, index=False)
+#     sftp_file = os.path.join(transperfect_path, file_name)
+#     local_file = os.path.join('/tmp', file_name)
+#     s3_client.download_file(s3_bucket, s3_key, local_file)
+#     sftp.put(local_file, sftp_file)
+#     logger.info("End: Upload file to sftp")
+    
+#     #step8: remove processed file from sftp
+#     if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+#         sftp.remove(SFTP_file_to_delete)
+#         sftp.close() 
+
+#     logger.info("Start: Insert job start entry into aws_glue_job_log")
+#     job_end_dtm = datetime.now(tz_NY).strftime("%Y-%m-%d %H:%M:%S")
+#     cdm_execute_qry(f"UPDATE kwdm.aws_glue_job_log SET job_status ='completed', end_time= '{job_end_dtm}', insert_count = (select count(*) from sdoh_history where create_date= '{datetime_NY}')where job_status ='started' and job_name = '{job_name}' and  start_time = '{job_start_dtm}';")
+#     logger.info("End: Insert job start entry into aws_glue_job_log")
+    
+#     #commit the job
+    job.commit()
