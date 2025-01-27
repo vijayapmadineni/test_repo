@@ -202,3 +202,20 @@ ORDER BY
     pg_relation_size(c.oid) DESC
 LIMIT 10;
 
+
+
+SELECT
+    st.schemaname,
+    st.relname AS tablename,
+    pg_size_pretty(pg_relation_size(st.relid)) AS total_size, -- Total size of the table
+    pg_size_pretty(pgstattuple.live_tuple_len) AS live_data, -- Size of live tuples
+    pg_size_pretty(pgstattuple.dead_tuple_len) AS dead_tuples, -- Size of dead tuples
+    pgstattuple.dead_tuple_percent AS dead_tuple_percent -- Percentage of dead tuples
+FROM
+    pg_stat_all_tables st
+CROSS JOIN LATERAL pgstattuple(st.relid) AS pgstattuple
+WHERE
+    st.schemaname NOT IN ('pg_catalog', 'information_schema') -- Exclude system schemas
+ORDER BY
+    pgstattuple.dead_tuple_percent DESC
+LIMIT 10;
