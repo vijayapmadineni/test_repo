@@ -219,3 +219,61 @@ WHERE
 ORDER BY
     pgstattuple.dead_tuple_percent DESC
 LIMIT 10;
+
+
+
+WITH partitioned_tables AS (
+    SELECT
+        parent_table.schemaname,
+        parent_table.relname AS partitioned_table,
+        child_table.inhrelid::regclass AS child_table
+    FROM
+        pg_inherits child_table
+    JOIN
+        pg_class parent_class ON child_table.inhparent = parent_class.oid
+    JOIN
+        pg_namespace parent_schema ON parent_class.relnamespace = parent_schema.oid
+    JOIN
+        pg_stat_all_tables parent_table ON parent_table.relid = parent_class.oid
+),
+pgstattuple_partition_data AS (
+    SELECT
+        pt.partitioned_table AS tablename,
+        pt.schemaname AS schemaname,
+        pgstattuple(child_table).tuple_len AS live_data,
+        pgstattuple(child_table).dead_tuple_len AS dead_data,
+        pgstattuple(child_table).free_space AS free_space,
+        pgstattuple(child_table).dead_tuple_percent AS dead_tuple_percent
+    FROM
+        partitioned_tables pt
+),
+pgstattuple_non_partition_data AS (
+    SELECT
+        st.schemaname,
+        st.relname AS tablename,
+        pgstattuple(st.relid).tuple_len AS live_data,
+        pgstattuple(st.relid).dead_tuple_len AS dead_data,
+        pgstattuple(st.relid).free_space AS free_space,
+        pgstattuple(st.relid).dead_tuple_percent AS dead_tuple_percent
+    FROM
+        pg_stat_all_tables st
+    JOIN pg_class c ON c.oid = st.relid
+    WHERE
+        c.relispartition = FALSE -- Only non-partitioned tables
+)
+SELECT
+    schemaname,
+    tablename,
+    pg_size_pretty(SUM(live_data)) AS live_data,
+    pg_size_pretty(SUM(dead_data)) AS dead_data,
+    pg_size_pretty(SUM(free_space)) AS free_space,
+    AVG(dead_tuple_percent) AS avg_dead_tuple_percent
+FROM (
+    SELECT * FROM pgstattuple_partition_data
+    UNION ALL
+    SELECT * FROM pgstattuple_non_partition_data
+) all_data
+GROUP BY schemaname, tablename
+ORDER BY avg_dead_tuple_percent DESC
+LIMIT 10;
+
