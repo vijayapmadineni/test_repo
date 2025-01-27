@@ -158,3 +158,47 @@ Monitor Storage Usage:
 Use pg_stat_all_tables, pg_stat_all_indexes, and pgstattuple regularly.
 Archive Old Data: Move old data to separate tables or databases.
 Using pgstattuple is the most accurate, but if extensions are restricted, rely on approximate catalog-based queries with manual fixes (VACUUM, REINDEX).
+
+
+To find the biggest tables in terms of row estimates, table size, index size, and total size, you can query PostgreSQL system catalogs and use size-related functions like pg_table_size, pg_indexes_size, and pg_total_relation_size.
+
+SELECT
+    n.nspname AS schemaname,
+    c.relname AS tablename,
+    pg_size_pretty(pg_table_size(c.oid)) AS table_size, -- Table data size
+    pg_size_pretty(pg_indexes_size(c.oid)) AS index_size, -- Indexes size
+    pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size, -- Total size (table + indexes + TOAST)
+    c.reltuples::BIGINT AS row_estimate -- Estimated number of rows
+FROM
+    pg_class c
+JOIN
+    pg_namespace n ON n.oid = c.relnamespace
+WHERE
+    c.relkind = 'r' -- Regular tables only
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema') -- Exclude system schemas
+ORDER BY
+    pg_total_relation_size(c.oid) DESC -- Sort by total size
+LIMIT 10; -- Get the top 10 biggest tables
+
+If you want to analyze more details about indexes, you can join with pg_index or run a separate query like this:
+
+SELECT
+    n.nspname AS schemaname,
+    c.relname AS indexname,
+    pg_size_pretty(pg_relation_size(c.oid)) AS index_size,
+    t.relname AS tablename
+FROM
+    pg_class c
+JOIN
+    pg_namespace n ON n.oid = c.relnamespace
+JOIN
+    pg_index i ON i.indexrelid = c.oid
+JOIN
+    pg_class t ON i.indrelid = t.oid
+WHERE
+    c.relkind = 'i' -- Only indexes
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY
+    pg_relation_size(c.oid) DESC
+LIMIT 10;
+
