@@ -259,3 +259,55 @@ ORDER BY
     pgstattuple.dead_tuple_percent DESC -- Order by percentage of dead tuples
 LIMIT 10;
 
+
+
+
+-- new query for estimated bloat
+
+WITH table_stats AS (
+    SELECT
+        n.nspname AS schemaname,
+        c.relname AS tablename, -- Use relname instead of tablename
+        c.reltuples::BIGINT AS est_rows, -- Estimated number of rows
+        c.relpages::BIGINT AS est_pages, -- Estimated number of pages
+        pg_table_size(c.oid) AS table_size, -- Size of table (without indexes)
+        pg_relation_size(c.oid) AS data_size, -- Data size only
+        pg_total_relation_size(c.oid) AS total_size, -- Total size (including indexes)
+        (pg_total_relation_size(c.oid) - pg_relation_size(c.oid)) AS bloat_size -- Estimated bloat size
+    FROM
+        pg_class c
+    JOIN
+        pg_namespace n ON n.oid = c.relnamespace
+    WHERE
+        n.nspname = 'schema1' -- Replace with your schema name
+        AND c.relkind = 'r' -- 'r' means regular tables only
+),
+bloat_estimates AS (
+    SELECT
+        schemaname,
+        tablename,
+        est_rows,
+        est_pages,
+        table_size,
+        data_size,
+        total_size,
+        bloat_size,
+        CASE
+            WHEN table_size > 0 THEN (bloat_size * 100.0 / table_size)
+            ELSE 0
+        END AS bloat_percentage
+    FROM table_stats
+)
+SELECT
+    schemaname,
+    tablename,
+    pg_size_pretty(table_size) AS total_table_size,
+    pg_size_pretty(data_size) AS data_size,
+    pg_size_pretty(bloat_size) AS bloat_size,
+    bloat_percentage
+FROM
+    bloat_estimates
+ORDER BY
+    bloat_percentage DESC
+LIMIT 20;
+
