@@ -1,167 +1,179 @@
+-- To identify bloated tables in a PostgreSQL database without installing any external tools
 
-Analyze Table Bloat:
-SELECT
-    schemaname,
-    relname AS tablename,
-    pg_size_pretty(pg_relation_size(relid)) AS total_size,
-    pg_size_pretty(pgstattuple.relpages * 8192) AS live_data,
-    pg_size_pretty(pgstattuple.dead_tuple_len) AS dead_tuples,
-    pgstattuple.dead_tuple_percent AS dead_tuple_percent
-FROM
-    pg_stat_all_tables
-JOIN
-    pgstattuple((schemaname || '.' || relname)::regclass) AS pgstattuple
-WHERE
-    schemaname NOT IN ('pg_catalog', 'information_schema')
-ORDER BY
-    pgstattuple.dead_tuple_percent DESC
-LIMIT 10;
-
-
-Analyze Index Bloat:
-
-SELECT
-    schemaname,
-    relname AS indexname,
-    pg_size_pretty(pg_relation_size(indexrelid)) AS total_size,
-    pg_size_pretty(pgstattuple.dead_tuple_len) AS dead_tuples,
-    pgstattuple.dead_tuple_percent AS dead_tuple_percent
-FROM
-    pg_stat_all_indexes
-JOIN
-    pgstattuple((schemaname || '.' || indexrelname)::regclass) AS pgstattuple
-WHERE
-    schemaname NOT IN ('pg_catalog', 'information_schema')
-ORDER BY
-    pgstattuple.dead_tuple_percent DESC
-LIMIT 10;
-
-
-
-
-Using pg_bloat_check (Automated and Comprehensive)
-pg_bloat_check is a script that estimates bloat in tables and indexes by analyzing system catalogs and applying a bloat formula. You do not need to install it in the database; it can be run as a script using SQL queries.
-
-
-WITH bloat_data AS (
+WITH table_stats AS (
     SELECT
         schemaname,
         tablename,
-        reltuples AS estimated_rows,
-        relpages AS pages,
-        pg_relation_size(relid) AS table_size,
-        pg_total_relation_size(relid) AS total_size,
-        pg_total_relation_size(relid) - pg_relation_size(relid) AS bloat_size,
-        CASE
-            WHEN pg_relation_size(relid) > 0 THEN
-                (pg_total_relation_size(relid) - pg_relation_size(relid)) * 100.0 / pg_total_relation_size(relid)
-            ELSE 0
-        END AS bloat_percent
+        reltuples::BIGINT AS est_rows,
+        relpages::BIGINT AS est_pages,
+        pg_table_size(c.oid) AS table_size,
+        pg_relation_size(c.oid) AS data_size,
+        pg_total_relation_size(c.oid) AS total_size,
+        (pg_total_relation_size(c.oid) - pg_relation_size(c.oid)) AS bloat_size
     FROM
-        pg_stat_all_tables
+        pg_class c
     JOIN
-        pg_class ON relid = pg_class.oid
+        pg_namespace n ON n.oid = c.relnamespace
+    JOIN
+        pg_stat_all_tables t ON t.relid = c.oid
     WHERE
-        schemaname NOT IN ('pg_catalog', 'information_schema')
+        n.nspname = 'schema1'
+        AND c.relkind = 'r' -- Regular tables only
+),
+bloat_estimates AS (
+    SELECT
+        schemaname,
+        tablename,
+        est_rows,
+        est_pages,
+        table_size,
+        data_size,
+        total_size,
+        bloat_size,
+        CASE
+            WHEN table_size > 0 THEN (bloat_size * 100.0 / table_size)
+            ELSE 0
+        END AS bloat_percentage
+    FROM table_stats
 )
 SELECT
     schemaname,
     tablename,
-    pg_size_pretty(table_size) AS table_size,
+    pg_size_pretty(table_size) AS total_table_size,
+    pg_size_pretty(data_size) AS data_size,
     pg_size_pretty(bloat_size) AS bloat_size,
-    bloat_percent
+    bloat_percentage
 FROM
-    bloat_data
-WHERE
-    bloat_percent > 10 -- Threshold for bloat
+    bloat_estimates
 ORDER BY
-    bloat_percent DESC;
+    bloat_percentage DESC
+LIMIT 20;
 
-for index:
+-- To check for bloat in indexes
 
-WITH index_bloat AS (
+WITH index_stats AS (
+    SELECT
+        n.nspname AS schemaname,
+        c.relname AS indexname,
+        t.relname AS tablename,
+        pg_relation_size(c.oid) AS index_size,
+        (pg_relation_size(c.oid) - (pg_stat.get_live_tuples(c.oid) * pg_index_tuple_estimate(c.oid))) AS bloat_size,
+        CASE
+            WHEN pg_relation_size(c.oid) > 0 THEN
+                ((pg_relation_size(c.oid) - (pg_stat.get_live_tuples(c.oid) * pg_index_tuple_estimate(c.oid))) * 100.0 / pg_relation_size(c.oid))
+            ELSE 0
+        END AS bloat_percentage
+    FROM
+        pg_class c
+    JOIN
+        pg_namespace n ON n.oid = c.relnamespace
+    JOIN
+        pg_index i ON i.indexrelid = c.oid
+    JOIN
+        pg_class t ON i.indrelid = t.oid
+    WHERE
+        n.nspname = 'schema1'
+        AND c.relkind = 'i' -- Only indexes
+),
+index_bloat_summary AS (
     SELECT
         schemaname,
-        indexrelname AS indexname,
-        reltuples AS estimated_rows,
-        pg_relation_size(indexrelid) AS index_size,
-        pg_relation_size(indexrelid) - (pg_stat.get_live_tuples(indexrelid) * pg_index_tuple_estimate(indexrelid)) AS bloat_size,
-        CASE
-            WHEN pg_relation_size(indexrelid) > 0 THEN
-                (pg_relation_size(indexrelid) - (pg_stat.get_live_tuples(indexrelid) * pg_index_tuple_estimate(indexrelid))) * 100.0 / pg_relation_size(indexrelid)
-            ELSE 0
-        END AS bloat_percent
-    FROM
-        pg_stat_all_indexes
-    JOIN
-        pg_class c ON c.oid = indexrelid
-    WHERE
-        schemaname NOT IN ('pg_catalog', 'information_schema')
+        indexname,
+        tablename,
+        index_size,
+        bloat_size,
+        bloat_percentage
+    FROM index_stats
+    WHERE bloat_size > 0
 )
 SELECT
     schemaname,
     indexname,
-    pg_size_pretty(index_size) AS index_size,
-    pg_size_pretty(bloat_size) AS bloat_size,
-    bloat_percent
+    tablename,
+    pg_size_pretty(index_size) AS total_index_size,
+    pg_size_pretty(bloat_size) AS index_bloat_size,
+    bloat_percentage
 FROM
-    index_bloat
-WHERE
-    bloat_percent > 10 -- Threshold for bloat
+    index_bloat_summary
 ORDER BY
-    bloat_percent DESC;
+    bloat_percentage DESC
+LIMIT 20;
 
-
-Use Built-In Views for Quick Estimation
-If installing extensions is not allowed and you need an approximate result:
-
-Use pg_stat_all_tables, pg_stat_all_indexes, and size functions (pg_table_size, pg_total_relation_size).
-
+-- Query to Find the Biggest Tables and Their Bloat
+WITH table_stats AS (
+    SELECT
+        n.nspname AS schemaname,
+        c.relname AS tablename,
+        pg_table_size(c.oid) AS total_table_size,
+        pg_relation_size(c.oid) AS data_size,
+        pg_total_relation_size(c.oid) - pg_relation_size(c.oid) AS bloat_size,
+        CASE
+            WHEN pg_table_size(c.oid) > 0 THEN
+                (pg_total_relation_size(c.oid) - pg_relation_size(c.oid)) * 100.0 / pg_table_size(c.oid)
+            ELSE
+                0
+        END AS bloat_percentage
+    FROM
+        pg_class c
+    JOIN
+        pg_namespace n ON n.oid = c.relnamespace
+    WHERE
+        c.relkind = 'r' -- Only regular tables
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') -- Exclude system schemas
+)
 SELECT
     schemaname,
     tablename,
-    pg_size_pretty(pg_table_size(relid)) AS total_size,
-    pg_size_pretty(pg_total_relation_size(relid) - pg_table_size(relid)) AS bloat_size,
-    CASE
-        WHEN pg_table_size(relid) > 0 THEN
-            (pg_total_relation_size(relid) - pg_table_size(relid)) * 100.0 / pg_table_size(relid)
-        ELSE 0
-    END AS bloat_percentage
+    pg_size_pretty(total_table_size) AS total_table_size,
+    pg_size_pretty(bloat_size) AS bloat_size,
+    bloat_percentage
 FROM
-    pg_stat_all_tables
-WHERE
-    schemaname NOT IN ('pg_catalog', 'information_schema')
+    table_stats
 ORDER BY
-    bloat_percentage DESC
+    total_table_size DESC
+LIMIT 10;
+
+--Query to Find the Biggest Indexes and Their Bloat
+WITH index_stats AS (
+    SELECT
+        n.nspname AS schemaname,
+        c.relname AS indexname,
+        t.relname AS tablename,
+        pg_relation_size(c.oid) AS index_size,
+        pg_relation_size(c.oid) - (pg_stat.get_live_tuples(c.oid) * pg_index_tuple_estimate(c.oid)) AS bloat_size,
+        CASE
+            WHEN pg_relation_size(c.oid) > 0 THEN
+                ((pg_relation_size(c.oid) - (pg_stat.get_live_tuples(c.oid) * pg_index_tuple_estimate(c.oid))) * 100.0 / pg_relation_size(c.oid))
+            ELSE
+                0
+        END AS bloat_percentage
+    FROM
+        pg_class c
+    JOIN
+        pg_namespace n ON n.oid = c.relnamespace
+    JOIN
+        pg_index i ON i.indexrelid = c.oid
+    JOIN
+        pg_class t ON i.indrelid = t.oid
+    WHERE
+        c.relkind = 'i' -- Only indexes
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') -- Exclude system schemas
+)
+SELECT
+    schemaname,
+    indexname,
+    tablename,
+    pg_size_pretty(index_size) AS total_index_size,
+    pg_size_pretty(bloat_size) AS index_bloat_size,
+    bloat_percentage
+FROM
+    index_stats
+ORDER BY
+    index_size DESC
 LIMIT 10;
 
 
-VACUUM FULL schema1.tablename;
-REINDEX INDEX schema1.indexname;
-
-SELECT
-    schemaname,
-    relname AS tablename,
-    indexrelname AS indexname,
-    idx_scan AS index_scans
-FROM
-    pg_stat_user_indexes
-WHERE
-    idx_scan = 0; -- Never used
-
-
-Best Practices for Long-Term Maintenance
-Enable Autovacuum: Ensure autovacuum is running and configured properly.
-Schedule Regular Maintenance:
-Use VACUUM, ANALYZE, and REINDEX at off-peak hours.
-Monitor Storage Usage:
-Use pg_stat_all_tables, pg_stat_all_indexes, and pgstattuple regularly.
-Archive Old Data: Move old data to separate tables or databases.
-Using pgstattuple is the most accurate, but if extensions are restricted, rely on approximate catalog-based queries with manual fixes (VACUUM, REINDEX).
-
-
-To find the biggest tables in terms of row estimates, table size, index size, and total size, you can query PostgreSQL system catalogs and use size-related functions like pg_table_size, pg_indexes_size, and pg_total_relation_size.
-
+-- To find the biggest tables in terms of row estimates, table size, index size, and total size
 SELECT
     n.nspname AS schemaname,
     c.relname AS tablename,
@@ -180,8 +192,8 @@ ORDER BY
     pg_total_relation_size(c.oid) DESC -- Sort by total size
 LIMIT 10; -- Get the top 10 biggest tables
 
-If you want to analyze more details about indexes, you can join with pg_index or run a separate query like this:
 
+-- analyze more details about indexes, you can join with pg_index or run a separate query
 SELECT
     n.nspname AS schemaname,
     c.relname AS indexname,
@@ -203,77 +215,47 @@ ORDER BY
 LIMIT 10;
 
 
-
+-- Bloat of table using pgstattuple
 SELECT
     st.schemaname,
     st.relname AS tablename,
     pg_size_pretty(pg_relation_size(st.relid)) AS total_size, -- Total size of the table
-    pg_size_pretty(pgstattuple.live_tuple_len) AS live_data, -- Size of live tuples
-    pg_size_pretty(pgstattuple.dead_tuple_len) AS dead_tuples, -- Size of dead tuples
-    pgstattuple.dead_tuple_percent AS dead_tuple_percent -- Percentage of dead tuples
+    pg_size_pretty(pgstattuple.tuple_len) AS live_data, -- Size of live tuples
+    pg_size_pretty(pgstattuple.dead_tuple_len) AS dead_data, -- Size of dead tuples
+    pgstattuple.dead_tuple_percent AS dead_tuple_percent, -- Percentage of dead tuples
+    pg_size_pretty(pgstattuple.free_space) AS free_space, -- Free space available
+    pgstattuple.free_percent AS free_percent -- Percentage of free space
 FROM
     pg_stat_all_tables st
+JOIN pg_class c ON c.oid = st.relid
 CROSS JOIN LATERAL pgstattuple(st.relid) AS pgstattuple
 WHERE
     st.schemaname NOT IN ('pg_catalog', 'information_schema') -- Exclude system schemas
+    AND c.relispartition = FALSE -- Exclude partitioned tables
 ORDER BY
-    pgstattuple.dead_tuple_percent DESC
+    pgstattuple.dead_tuple_percent DESC -- Order by percentage of dead tuples
 LIMIT 10;
 
-
-
-WITH partitioned_tables AS (
-    SELECT
-        parent_table.schemaname,
-        parent_table.relname AS partitioned_table,
-        child_table.inhrelid::regclass AS child_table
-    FROM
-        pg_inherits child_table
-    JOIN
-        pg_class parent_class ON child_table.inhparent = parent_class.oid
-    JOIN
-        pg_namespace parent_schema ON parent_class.relnamespace = parent_schema.oid
-    JOIN
-        pg_stat_all_tables parent_table ON parent_table.relid = parent_class.oid
-),
-pgstattuple_partition_data AS (
-    SELECT
-        pt.partitioned_table AS tablename,
-        pt.schemaname AS schemaname,
-        pgstattuple(child_table).tuple_len AS live_data,
-        pgstattuple(child_table).dead_tuple_len AS dead_data,
-        pgstattuple(child_table).free_space AS free_space,
-        pgstattuple(child_table).dead_tuple_percent AS dead_tuple_percent
-    FROM
-        partitioned_tables pt
-),
-pgstattuple_non_partition_data AS (
-    SELECT
-        st.schemaname,
-        st.relname AS tablename,
-        pgstattuple(st.relid).tuple_len AS live_data,
-        pgstattuple(st.relid).dead_tuple_len AS dead_data,
-        pgstattuple(st.relid).free_space AS free_space,
-        pgstattuple(st.relid).dead_tuple_percent AS dead_tuple_percent
-    FROM
-        pg_stat_all_tables st
-    JOIN pg_class c ON c.oid = st.relid
-    WHERE
-        c.relispartition = FALSE -- Only non-partitioned tables
-)
+-- Bloat of index using pgstattuple
 SELECT
-    schemaname,
-    tablename,
-    pg_size_pretty(SUM(live_data)) AS live_data,
-    pg_size_pretty(SUM(dead_data)) AS dead_data,
-    pg_size_pretty(SUM(free_space)) AS free_space,
-    AVG(dead_tuple_percent) AS avg_dead_tuple_percent
-FROM (
-    SELECT * FROM pgstattuple_partition_data
-    UNION ALL
-    SELECT * FROM pgstattuple_non_partition_data
-) all_data
-GROUP BY schemaname, tablename
-ORDER BY avg_dead_tuple_percent DESC
+    n.nspname AS schemaname,
+    c.relname AS indexname,
+    t.relname AS tablename,
+    pg_size_pretty(pg_relation_size(c.oid)) AS total_size, -- Total size of the index
+    pg_size_pretty(pgstattuple.tuple_len) AS live_data, -- Size of live tuples in the index
+    pg_size_pretty(pgstattuple.dead_tuple_len) AS dead_data, -- Size of dead tuples in the index
+    pgstattuple.dead_tuple_percent AS dead_tuple_percent, -- Percentage of dead tuples in the index
+    pg_size_pretty(pgstattuple.free_space) AS free_space, -- Free space in the index
+    pgstattuple.free_percent AS free_percent -- Percentage of free space in the index
+FROM
+    pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_index i ON i.indexrelid = c.oid
+JOIN pg_class t ON i.indrelid = t.oid
+CROSS JOIN LATERAL pgstattuple(c.oid) AS pgstattuple
+WHERE
+    n.nspname NOT IN ('pg_catalog', 'information_schema') -- Exclude system schemas
+ORDER BY
+    pgstattuple.dead_tuple_percent DESC -- Order by percentage of dead tuples
 LIMIT 10;
 
