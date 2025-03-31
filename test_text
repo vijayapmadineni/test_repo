@@ -1,55 +1,378 @@
-BEGIN;
-ALTER TABLE IF EXISTS kwdm.kw_communication RENAME TO kw_communication_old;
- 
-CREATE TABLE kwdm.kw_communication(
-customer_id varchar(50) NULL,
-    member_id varchar(50) NULL,
-    campaign_id varchar(60) NULL,
-    channel_type varchar(100) NULL,
-    status varchar(100) NULL,
-    request_data jsonb NULL,
-    response_data jsonb NULL,
-    insert_by varchar NULL,
-    insert_dtm timestamp NOT NULL,
-    message_id varchar(255) NULL,
-    message_type varchar(70) NULL,
-    event_id varchar(256) NULL,
-    event_type varchar(60) NULL,
-    journey_name varchar(100) NULL,
-    sub_journey_name varchar(100) NULL,
-    graph_trans_id varchar(150) NULL,
-    jo_id varchar NULL,
-    outreach_id varchar(100) NULL,
-    audit_log_id bigserial NOT NULL,
-    currentstate varchar(50) NULL,
-    opportunity_id varchar(100) NULL,
-    sf_sync_id varchar(100) NULL,
-    CONSTRAINT kw_communication_partition_pk PRIMARY KEY (audit_log_id, insert_dtm)
-) PARTITION BY RANGE (insert_dtm);
- 
-CREATE INDEX IF NOT EXISTS kw_communication_jo_id_part_idx ON kwdm.kw_communication USING btree (jo_id);
-CREATE INDEX IF NOT EXISTS kw_communication_member_id_part_idx ON kwdm.kw_communication USING btree (member_id, insert_dtm);
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_default PARTITION OF kwdm.kw_communication DEFAULT
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_2020 PARTITION OF kwdm.kw_communication
-    FOR VALUES FROM ('2020-01-01') TO ('2021-01-01');
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_2021 PARTITION OF kwdm.kw_communication
-    FOR VALUES FROM ('2021-01-01') TO ('2022-01-01');
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_2022 PARTITION OF kwdm.kw_communication
-    FOR VALUES FROM ('2022-01-01') TO ('2023-01-01');
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_2023 PARTITION OF kwdm.kw_communication
-    FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_2024 PARTITION OF kwdm.kw_communication
-    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
- 
-CREATE TABLE IF NOT EXISTS kwdm.kw_communication_part_2025 PARTITION OF kwdm.kw_communication
-    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
- 
-INSERT INTO kwdm.kw_communication
-SELECT * FROM kwdm.kw_communication_old;
-COMMIT;
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.types import *
+from datetime import datetime,timedelta
+from dateutil.relativedelta import relativedelta
+import pyspark.sql.functions as sf
+import pytz
+import logging
+import boto3
+import psycopg2
+import re
+import os
+import ssl
+
+print("ca budle path: ", os.environ.get('AWS_CA_BUNDLE'))
+print("ssl cert budle path: ", ssl.get_default_verify_paths())
+
+
+sys.argv += ['--JOB_NAME', 'job_kwdm_mm_medhok_to_base_pauth', '--kw_s3bucket', 'hf-dev-cdp-kitewheel', '--pref_ddbtbl_arn', 'arn:aws:dynamodb:us-east-1:254161167246:table/hf_preferences_history_tracker']
+
+
+REGION = 'us-east-1'
+NY_TZ = pytz.timezone('US/Eastern')
+
+
+def setup_logging(job_name):
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logger = logging.getLogger(job_name)
+    logger.setLevel(logging.INFO)
+    return logger
+
+
+def get_glue_connection(connection_name):
+    glue_client = boto3.client('glue', region_name=REGION)
+    response = glue_client.get_connection(Name=connection_name, HidePassword=False)
+    creds = {
+        'username': response['Connection']['ConnectionProperties']['USERNAME'],
+        'password': response['Connection']['ConnectionProperties']['PASSWORD'],
+        'url': response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
+    }
+    match = re.match(r'jdbc:(\w+)://([^:/]+):(\d+)/([^?]+)', creds['url'])
+    creds.update({
+        'connection_type': match.group(1),
+        'host': match.group(2),
+        'port': match.group(3),
+        'db': match.group(4)
+    })
+    return creds
+
+
+def execute_query(query, creds, params=None, fetch_one=False):
+    """
+    Executes a SQL query on a PostgreSQL database with optional parameters.
+    Args:
+    - query: SQL query string.
+    - creds: Dictionary containing database credentials.
+    - params: Tuple of parameters for the SQL query (optional).
+    - fetch_one: Boolean indicating whether to fetch only one record from the query results
+    Retuns:
+    - if fetch_one is True, returns a single record or None
+    - if fetch_one is False, returns the number of affected rows.
+    """
+    conn = psycopg2.connect(database=creds['db'], user=creds['username'], password=creds['password'], host=creds['host'], port=creds['port'])
+    cur = conn.cursor()
+
+    try:
+        if params:
+            cur.execute(query, params)
+        else:
+            cur.execute(query)
+
+        if fetch_one:
+            result = cur.fetchone()
+        else:
+            conn.commit()
+            result = cur.rowcount
+    finally:
+        cur.close()
+        conn.close()
+    return result
+
+
+def log_job_start(creds, logger, job_name, status):
+    logger.info("Start: Insert job start entry into aws_glue_job_log")
+    job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Parameterized query to insert the start entry
+    query = """
+        INSERT INTO kwdm.aws_glue_job_log (job_name, start_time, job_status)
+        VALUES (%s, %s, %s);
+    """
+    execute_query(query, creds, (job_name, job_start_dtm, status))
+    logger.info("End: Insert job start entry into aws_glue_job_log")
+    return job_start_dtm
+
+
+def log_job_end(creds, logger, job_name, job_start_dtm, status, comments=None, source_count=None, insert_count=None, update_count=None, delete_count=None):
+    logger.info("Start: Update job end entry in aws_glue_job_log")
+    job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Construct the SQL query with parameterized values
+    query = """
+        UPDATE kwdm.aws_glue_job_log 
+        SET source_count = %s, 
+            insert_count = %s, 
+            update_count = %s, 
+            delete_count = %s, 
+            comments = %s, 
+            end_time = %s, 
+            job_status = %s 
+        WHERE job_name = %s AND start_time = %s;
+    """
+    # Execute the query, passing None for any values that are not provided
+    execute_query(query, creds, (source_count, insert_count, update_count, delete_count, comments, job_end_dtm, status, job_name, job_start_dtm))
+    logger.info("End: Update job end entry in aws_glue_job_log")
+
+
+def write_df_to_postgres(logger, df, table_name, cdm_creds, log_message):
+    logger.info(f"Start: {log_message}")
+    (df.write.format("jdbc")
+     .option("url", cdm_creds['url'])
+     .option("driver", "org.postgresql.Driver")
+     .option("dbtable", table_name)
+     .mode("append")
+     .option("user", cdm_creds['username'])
+     .option("password", cdm_creds['password'])
+     .save()
+    )
+    logger.info(f"End: {log_message}")
+
+
+# @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'pref_ddbtbl_arn'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+logger = setup_logging(args['JOB_NAME'])
+cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+
+# insert starting job entry into the aws glue job log table.
+job_start_time = log_job_start(cdm_creds, logger, args['JOB_NAME'], 'started')
+
+dyf = glueContext.create_dynamic_frame.from_options(
+    connection_type="dynamodb",
+    connection_options={
+        "dynamodb.export": "ddb",
+        "dynamodb.tableArn": args['pref_ddbtbl_arn'],
+        "dynamodb.unnestDDBJson": True,
+        "dynamodb.s3.bucket": args['kw_s3bucket'],
+        "dynamodb.s3.prefix": "Temp/",
+        "dynamodb.sslEnabled": "false",
+    }
+)
+
+sdf = dyf.toDF()
+sdf = sdf.select('channel_key', 'channel_value', 'member_id', 'subject_id', 'option_value', 'last_name', 'option_name', 'source', 'is_default', 'is_delete', 'custom_preferences', 'event_type', 'purpose_name', 'channel_enrollment_type', 'effective_date', 'UUID', 'action_timestamp', 'channel_type', 'first_name', 'linked_subject_id')
+
+datetime_NY = datetime.now(NY_TZ)
+sdf = sdf.withColumn("load_datetime", sf.unix_timestamp(sf.lit(datetime_NY.strftime("%Y-%m-%d %H:%M:%S")),'yyyy-MM-dd HH:mm:ss').cast("timestamp"))
+sdf.printSchema()
+sdf.show(truncate=False)
+sdf_cnt = sdf.count()
+logger.info(f'Source df count: {sdf_cnt}')
+
+write_df_to_postgres(logger, sdf, f'public.preference_mgmt_dynamo_data_test', cdm_creds, f'write data into public.preference_mgmt_dynamo_data_test')
+
+log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=None, source_count=None, insert_count=sdf_cnt, update_count=None, delete_count=None)
+
+job.commit()
+
+
+
+
+/usr/local/bin/python3 /opt/project/136_pref_mgmt_data_load/job_dynamodb_extract_preference_mgmt_refresh.py 
+ca budle path:  /root/.aws/nskp_config/netskope-cert-bundle.pem
+ssl cert budle path:  DefaultVerifyPaths(cafile='/etc/pki/tls/cert.pem', capath='/etc/pki/tls/certs', openssl_cafile_env='SSL_CERT_FILE', openssl_cafile='/etc/pki/tls/cert.pem', openssl_capath_env='SSL_CERT_DIR', openssl_capath='/etc/pki/tls/certs')
+SLF4J: Class path contains multiple SLF4J bindings.
+SLF4J: Found binding in [jar:file:/home/glue_user/spark/jars/log4j-slf4j-impl-2.17.2.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: Found binding in [jar:file:/home/glue_user/spark/jars/slf4j-reload4j-1.7.36.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: Found binding in [jar:file:/home/glue_user/aws-glue-libs/jars/log4j-slf4j-impl-2.17.2.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: Found binding in [jar:file:/home/glue_user/aws-glue-libs/jars/slf4j-reload4j-1.7.36.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J: Actual binding is of type [org.apache.logging.slf4j.Log4jLoggerFactory]
+Setting default log level to "WARN".
+To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
+/home/glue_user/spark/python/pyspark/sql/context.py:112: FutureWarning: Deprecated in 3.0.0. Use SparkSession.builder.getOrCreate() instead.
+  warnings.warn(
+2025-03-31 14:10:33 INFO job_kwdm_mm_medhok_to_base_pauth: Start: Insert job start entry into aws_glue_job_log
+2025-03-31 14:10:34 INFO job_kwdm_mm_medhok_to_base_pauth: End: Insert job start entry into aws_glue_job_log
+25/03/31 14:10:50 ERROR DynamoExportConnection: Exception with DynamoDB ExportTableToPointInTimeRequest
+com.amazonaws.SdkClientException: Unable to execute HTTP request: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleRetryableException(AmazonHttpClient.java:1216)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1162)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:811)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:779)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:753)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:713)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:695)
+	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:559)
+	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:539)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.doInvoke(AmazonDynamoDBClient.java:6243)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6210)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6199)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.executeExportTableToPointInTime(AmazonDynamoDBClient.java:3116)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.exportTableToPointInTime(AmazonDynamoDBClient.java:3083)
+	at com.amazonaws.services.glue.connections.DynamoExportConnection.dynamodbexport(DynamoExportConnection.scala:80)
+	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:718)
+	at com.amazonaws.services.glue.DataSource.getDynamicFrame(DataSource.scala:104)
+	at com.amazonaws.services.glue.DataSource.getDynamicFrame$(DataSource.scala:104)
+	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:714)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
+	at py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
+	at py4j.Gateway.invoke(Gateway.java:282)
+	at py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
+	at py4j.commands.CallCommand.execute(CallCommand.java:79)
+	at py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:182)
+	at py4j.ClientServerConnection.run(ClientServerConnection.java:106)
+	at java.lang.Thread.run(Thread.java:750)
+Caused by: javax.net.ssl.SSLHandshakeException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at sun.security.ssl.Alert.createSSLException(Alert.java:131)
+	at sun.security.ssl.TransportContext.fatal(TransportContext.java:331)
+	at sun.security.ssl.TransportContext.fatal(TransportContext.java:274)
+	at sun.security.ssl.TransportContext.fatal(TransportContext.java:269)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1356)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.onConsumeCertificate(CertificateMessage.java:1231)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.consume(CertificateMessage.java:1174)
+	at sun.security.ssl.SSLHandshake.consume(SSLHandshake.java:377)
+	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:444)
+	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:422)
+	at sun.security.ssl.TransportContext.dispatch(TransportContext.java:182)
+	at sun.security.ssl.SSLTransport.decode(SSLTransport.java:152)
+	at sun.security.ssl.SSLSocketImpl.decode(SSLSocketImpl.java:1401)
+	at sun.security.ssl.SSLSocketImpl.readHandshakeRecord(SSLSocketImpl.java:1309)
+	at sun.security.ssl.SSLSocketImpl.startHandshake(SSLSocketImpl.java:440)
+	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.createLayeredSocket(SSLConnectionSocketFactory.java:436)
+	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.connectSocket(SSLConnectionSocketFactory.java:384)
+	at com.amazonaws.http.conn.ssl.SdkTLSSocketFactory.connectSocket(SdkTLSSocketFactory.java:142)
+	at org.apache.http.impl.conn.DefaultHttpClientConnectionOperator.connect(DefaultHttpClientConnectionOperator.java:142)
+	at org.apache.http.impl.conn.PoolingHttpClientConnectionManager.connect(PoolingHttpClientConnectionManager.java:374)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at com.amazonaws.http.conn.ClientConnectionManagerFactory$Handler.invoke(ClientConnectionManagerFactory.java:76)
+	at com.amazonaws.http.conn.$Proxy32.connect(Unknown Source)
+	at org.apache.http.impl.execchain.MainClientExec.establishRoute(MainClientExec.java:393)
+	at org.apache.http.impl.execchain.MainClientExec.execute(MainClientExec.java:236)
+	at org.apache.http.impl.execchain.ProtocolExec.execute(ProtocolExec.java:186)
+	at org.apache.http.impl.client.InternalHttpClient.doExecute(InternalHttpClient.java:185)
+	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:83)
+	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:56)
+	at com.amazonaws.http.apache.client.impl.SdkHttpClient.execute(SdkHttpClient.java:72)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1343)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1154)
+	... 29 more
+Caused by: sun.security.validator.ValidatorException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:456)
+	at sun.security.validator.PKIXValidator.engineValidate(PKIXValidator.java:323)
+	at sun.security.validator.Validator.validate(Validator.java:271)
+	at sun.security.ssl.X509TrustManagerImpl.validate(X509TrustManagerImpl.java:315)
+	at sun.security.ssl.X509TrustManagerImpl.checkTrusted(X509TrustManagerImpl.java:223)
+	at sun.security.ssl.X509TrustManagerImpl.checkServerTrusted(X509TrustManagerImpl.java:129)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1340)
+	... 59 more
+Caused by: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at sun.security.provider.certpath.SunCertPathBuilder.build(SunCertPathBuilder.java:148)
+	at sun.security.provider.certpath.SunCertPathBuilder.engineBuild(SunCertPathBuilder.java:129)
+	at java.security.cert.CertPathBuilder.build(CertPathBuilder.java:280)
+	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:451)
+	... 65 more
+Traceback (most recent call last):
+  File "/opt/project/136_pref_mgmt_data_load/job_dynamodb_extract_preference_mgmt_refresh.py", line 149, in <module>
+    dyf = glueContext.create_dynamic_frame.from_options(
+  File "/home/glue_user/aws-glue-libs/PyGlue.zip/awsglue/dynamicframe.py", line 609, in from_options
+  File "/home/glue_user/aws-glue-libs/PyGlue.zip/awsglue/context.py", line 237, in create_dynamic_frame_from_options
+  File "/home/glue_user/aws-glue-libs/PyGlue.zip/awsglue/data_source.py", line 36, in getFrame
+  File "/home/glue_user/spark/python/lib/py4j-0.10.9.5-src.zip/py4j/java_gateway.py", line 1321, in __call__
+  File "/home/glue_user/spark/python/pyspark/sql/utils.py", line 190, in deco
+    return f(*a, **kw)
+  File "/home/glue_user/spark/python/lib/py4j-0.10.9.5-src.zip/py4j/protocol.py", line 326, in get_return_value
+py4j.protocol.Py4JJavaError: An error occurred while calling o53.getDynamicFrame.
+: com.amazonaws.SdkClientException: Unable to execute HTTP request: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleRetryableException(AmazonHttpClient.java:1216)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1162)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:811)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:779)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:753)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:713)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:695)
+	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:559)
+	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:539)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.doInvoke(AmazonDynamoDBClient.java:6243)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6210)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6199)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.executeExportTableToPointInTime(AmazonDynamoDBClient.java:3116)
+	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.exportTableToPointInTime(AmazonDynamoDBClient.java:3083)
+	at com.amazonaws.services.glue.connections.DynamoExportConnection.dynamodbexport(DynamoExportConnection.scala:80)
+	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:718)
+	at com.amazonaws.services.glue.DataSource.getDynamicFrame(DataSource.scala:104)
+	at com.amazonaws.services.glue.DataSource.getDynamicFrame$(DataSource.scala:104)
+	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:714)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
+	at py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
+	at py4j.Gateway.invoke(Gateway.java:282)
+	at py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
+	at py4j.commands.CallCommand.execute(CallCommand.java:79)
+	at py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:182)
+	at py4j.ClientServerConnection.run(ClientServerConnection.java:106)
+	at java.lang.Thread.run(Thread.java:750)
+Caused by: javax.net.ssl.SSLHandshakeException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at sun.security.ssl.Alert.createSSLException(Alert.java:131)
+	at sun.security.ssl.TransportContext.fatal(TransportContext.java:331)
+	at sun.security.ssl.TransportContext.fatal(TransportContext.java:274)
+	at sun.security.ssl.TransportContext.fatal(TransportContext.java:269)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1356)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.onConsumeCertificate(CertificateMessage.java:1231)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.consume(CertificateMessage.java:1174)
+	at sun.security.ssl.SSLHandshake.consume(SSLHandshake.java:377)
+	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:444)
+	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:422)
+	at sun.security.ssl.TransportContext.dispatch(TransportContext.java:182)
+	at sun.security.ssl.SSLTransport.decode(SSLTransport.java:152)
+	at sun.security.ssl.SSLSocketImpl.decode(SSLSocketImpl.java:1401)
+	at sun.security.ssl.SSLSocketImpl.readHandshakeRecord(SSLSocketImpl.java:1309)
+	at sun.security.ssl.SSLSocketImpl.startHandshake(SSLSocketImpl.java:440)
+	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.createLayeredSocket(SSLConnectionSocketFactory.java:436)
+	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.connectSocket(SSLConnectionSocketFactory.java:384)
+	at com.amazonaws.http.conn.ssl.SdkTLSSocketFactory.connectSocket(SdkTLSSocketFactory.java:142)
+	at org.apache.http.impl.conn.DefaultHttpClientConnectionOperator.connect(DefaultHttpClientConnectionOperator.java:142)
+	at org.apache.http.impl.conn.PoolingHttpClientConnectionManager.connect(PoolingHttpClientConnectionManager.java:374)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at com.amazonaws.http.conn.ClientConnectionManagerFactory$Handler.invoke(ClientConnectionManagerFactory.java:76)
+	at com.amazonaws.http.conn.$Proxy32.connect(Unknown Source)
+	at org.apache.http.impl.execchain.MainClientExec.establishRoute(MainClientExec.java:393)
+	at org.apache.http.impl.execchain.MainClientExec.execute(MainClientExec.java:236)
+	at org.apache.http.impl.execchain.ProtocolExec.execute(ProtocolExec.java:186)
+	at org.apache.http.impl.client.InternalHttpClient.doExecute(InternalHttpClient.java:185)
+	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:83)
+	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:56)
+	at com.amazonaws.http.apache.client.impl.SdkHttpClient.execute(SdkHttpClient.java:72)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1343)
+	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1154)
+	... 29 more
+Caused by: sun.security.validator.ValidatorException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:456)
+	at sun.security.validator.PKIXValidator.engineValidate(PKIXValidator.java:323)
+	at sun.security.validator.Validator.validate(Validator.java:271)
+	at sun.security.ssl.X509TrustManagerImpl.validate(X509TrustManagerImpl.java:315)
+	at sun.security.ssl.X509TrustManagerImpl.checkTrusted(X509TrustManagerImpl.java:223)
+	at sun.security.ssl.X509TrustManagerImpl.checkServerTrusted(X509TrustManagerImpl.java:129)
+	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1340)
+	... 59 more
+Caused by: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+	at sun.security.provider.certpath.SunCertPathBuilder.build(SunCertPathBuilder.java:148)
+	at sun.security.provider.certpath.SunCertPathBuilder.engineBuild(SunCertPathBuilder.java:129)
+	at java.security.cert.CertPathBuilder.build(CertPathBuilder.java:280)
+	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:451)
+	... 65 more
+
+
+Process finished with exit code 1
