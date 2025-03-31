@@ -1,5 +1,62 @@
 import os
 import sys
+from pyspark.conf import SparkConf
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+
+# 1. Set the minimum required Java options
+os.environ['JAVA_TOOL_OPTIONS'] = (
+    "-Djavax.net.ssl.trustStore=/root/.netskope/ssl/netskope-truststore.jks "
+    "-Djavax.net.ssl.trustStorePassword=changeit "
+    "-Dcom.amazonaws.sdk.disableCertChecking=false"
+)
+
+# 2. Additional security configurations
+os.environ['AWS_CA_BUNDLE'] = '/root/.aws/nskp_config/netskope-cert-bundle.pem'
+os.environ['REQUESTS_CA_BUNDLE'] = '/root/.aws/nskp_config/netskope-cert-bundle.pem'
+
+# 3. Configure Spark with explicit truststore settings
+conf = SparkConf()
+conf.set("spark.driver.extraJavaOptions", 
+    "-Djavax.net.ssl.trustStore=/root/.netskope/ssl/netskope-truststore.jks "
+    "-Djavax.net.ssl.trustStorePassword=changeit "
+    "-Dcom.amazonaws.sdk.disableCertChecking=false")
+
+conf.set("spark.executor.extraJavaOptions",
+    "-Djavax.net.ssl.trustStore=/root/.netskope/ssl/netskope-truststore.jks "
+    "-Djavax.net.ssl.trustStorePassword=changeit "
+    "-Dcom.amazonaws.sdk.disableCertChecking=false")
+
+# 4. Initialize Spark context
+sc = SparkContext(conf=conf)
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+
+# 5. Configure boto3 clients
+import boto3
+from botocore.config import Config
+
+aws_config = Config(
+    region_name='us-east-1',
+    tls={
+        'ca_bundle': '/root/.aws/nskp_config/netskope-cert-bundle.pem'
+    }
+)
+
+# Example client creation
+dynamodb = boto3.client('dynamodb', config=aws_config)
+
+
+
+
+
+
+
+
+
+
+import os
+import sys
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 
