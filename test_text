@@ -1,3 +1,31 @@
+FROM amazon/aws-glue-libs:glue_libs_4.0.0_image_01
+
+# Install required tools for certificate management
+RUN yum update -y && yum install -y ca-certificates
+
+# Copy the Netspoke certificate into the container
+COPY netskope-cert-bundle.pem /usr/local/share/ca-certificates/netskope-cert-bundle.crt
+
+# Update the CA certificates
+RUN update-ca-certificates
+
+# Install any necessary Python libraries
+RUN pip3 install paramiko
+RUN pip3 install psycopg2-binary
+
+# Optional: Set up working directory
+WORKDIR /opt/project/
+
+# Copy your project files into the container (if necessary)
+# COPY . /opt/project/
+
+# Set up the entry point for the Glue job
+# (This will depend on how your Glue job is invoked)
+CMD ["python3", "your_glue_job_script.py"]
+
+
+
+
 import sys
 from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
