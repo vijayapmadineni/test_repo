@@ -1,3 +1,42 @@
+def has_job_run_for_period(logger, job_name, period_type, cdm_creds, execution_date=None):
+    """
+    Check if the specified job has already run in a given period (week, month, quarter, year, etc.)
+    
+    :param logger: Logger object for logging info and errors
+    :param job_name: The name of the Glue job
+    :param period_type: The period to check (week, month, quarter, year, etc.)
+    :param cdm_creds: Credentials to access PostgreSQL
+    :param execution_date: The date for comparison, if None current date is used
+    :return: True if job has run for the specified period, False otherwise
+    """
+    if execution_date is None:
+        execution_date = datetime.now(NY_TZ)
+
+    # Build SQL query based on the period_type
+    period_check_qry = f'''
+    select 1
+    from kwdm.aws_glue_job_execution_tracker
+    where job_name = '{job_name}' 
+    and period_type = '{period_type}' 
+    and date_trunc('{period_type}', execution_date) = date_trunc('{period_type}', %s)
+    and exclude_run = false
+    limit 1;
+    '''
+
+    try:
+        # Execute the query to check if the job has already run
+        if execute_query(period_check_qry, cdm_creds, params=(execution_date,), fetch_one=True):
+            logger.info(f"The job '{job_name}' was already completed for this {period_type}, skipping this run.")
+            return True
+        else:
+            return False
+    except Exception as e:
+        logger.error(f"Error occurred while checking if the job has run for the {period_type}: {str(e)}")
+        raise
+
+
+
+
 Job 1:
 
 """
