@@ -1,131 +1,31 @@
-{
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:GetItem",
-        "dynamodb:Scan",
-        "dynamodb:Query",
-        "dynamodb:DescribeTable",
-        "dynamodb:ExportTableToPointInTime"
-      ],
-      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT_ID:table/table_1"
-    }
+Job 1:
 
+"""
+Job Description:
+This job reads XLSX files from the pharmacy share and writes the data into the KWDM table kwdm.hf_cde_formulary_list for EP and QHP.
+It is scheduled to run monthly on 1st, 2nd & 3rd early hours of each month.
 
+Fiel and Directory Structure:
+If the job runs in January, it will process the files from the January directories. Below are examples of January 2025 files and directories:
+
+- Share drive: pharmacy
+- GSS Directory: /REPORTING/Inbound/Vendors/Caremark/Formularies/Medicare/2025/1_January/Marketing/Formulary_2025_GSS_Memb_Matls_Web_Post_20241216_Healthfirst
+- Select Directory: /REPORTING/Inbound/Vendors/Caremark/Formularies/Medicare/2025/1_January/Marketing/Formulary_2025_SEL_Memb_Matls_Web_Post_20241216_Healthfirst
+- GSS file name: HEALTHFIRST-HEALTHFIRST_CY25_GS (JAN_2)-2025-Complete_LEG_NM25_v2.xlsx
+- Select file name: HEALTHFIRST-HEALTHFIRST_CY25_SELECT (JAN_2)-2025-Complete_LEG_NM25_v2.xlsx
+
+Execution Behavior:
+This job runs only once per month.
+Job execution is tracked in the kwdm.aws_glue_job_execution_tracker table.
+If an entry exists for a given month, the job will skip processing the files.
+To override this, set the flag exclude_run = false for all entries for that month.
+
+Error handling and manual execution:
+If the directory structure is not as expected, files can be copied to an SFTP location and triggered manually by passing the parameter process_from_hf_sftp = yes.
+SFTP location for production: /SFMC/PROD/Formularies/Medicare
+"""
+import fnmatch
 import os
-import sys
-from pyspark.conf import SparkConf
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-
-# 1. Set the minimum required Java options
-os.environ['JAVA_TOOL_OPTIONS'] = (
-    "-Djavax.net.ssl.trustStore=/root/.netskope/ssl/netskope-truststore.jks "
-    "-Djavax.net.ssl.trustStorePassword=changeit "
-    "-Dcom.amazonaws.sdk.disableCertChecking=false"
-)
-
-# 2. Additional security configurations
-os.environ['AWS_CA_BUNDLE'] = '/root/.aws/nskp_config/netskope-cert-bundle.pem'
-os.environ['REQUESTS_CA_BUNDLE'] = '/root/.aws/nskp_config/netskope-cert-bundle.pem'
-
-# 3. Configure Spark with explicit truststore settings
-conf = SparkConf()
-conf.set("spark.driver.extraJavaOptions", 
-    "-Djavax.net.ssl.trustStore=/root/.netskope/ssl/netskope-truststore.jks "
-    "-Djavax.net.ssl.trustStorePassword=changeit "
-    "-Dcom.amazonaws.sdk.disableCertChecking=false")
-
-conf.set("spark.executor.extraJavaOptions",
-    "-Djavax.net.ssl.trustStore=/root/.netskope/ssl/netskope-truststore.jks "
-    "-Djavax.net.ssl.trustStorePassword=changeit "
-    "-Dcom.amazonaws.sdk.disableCertChecking=false")
-
-# 4. Initialize Spark context
-sc = SparkContext(conf=conf)
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-
-# 5. Configure boto3 clients
-import boto3
-from botocore.config import Config
-
-aws_config = Config(
-    region_name='us-east-1',
-    tls={
-        'ca_bundle': '/root/.aws/nskp_config/netskope-cert-bundle.pem'
-    }
-)
-
-# Example client creation
-dynamodb = boto3.client('dynamodb', config=aws_config)
-
-
-
-
-
-
-
-
-
-
-import os
-import sys
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-
-# Add this before creating SparkContext
-os.environ['JAVA_OPTS'] = (
-    f"-Djavax.net.ssl.trustStore=/root/.aws/nskp_config/netskope-cert-bundle.pem "
-    f"-Djavax.net.ssl.trustStoreType=PEM "
-    f"-Djavax.net.ssl.trustStorePassword=changeit"
-)
-
-# Or alternatively create a JKS truststore (more reliable for Java)
-# First convert PEM to JKS (run this once):
-# keytool -importcert -file /root/.aws/nskp_config/netskope-cert-bundle.pem \
-#         -keystore netskope-truststore.jks -alias netskope-ca \
-#         -storepass changeit -noprompt
-
-# Then point to the JKS file:
-os.environ['JAVA_OPTS'] = (
-    f"-Djavax.net.ssl.trustStore=/path/to/netskope-truststore.jks "
-    f"-Djavax.net.ssl.trustStorePassword=changeit"
-)
-
-sc = SparkContext()
-glueContext = GlueContext(sc)
-
-
-
-
-FROM amazon/aws-glue-libs:glue_libs_4.0.0_image_01
-
-# Install required tools for certificate management
-RUN yum update -y && yum install -y ca-certificates
-
-# Copy the Netspoke certificate into the container
-COPY netskope-cert-bundle.pem /usr/local/share/ca-certificates/netskope-cert-bundle.crt
-
-# Update the CA certificates
-RUN update-ca-certificates
-
-# Install any necessary Python libraries
-RUN pip3 install paramiko
-RUN pip3 install psycopg2-binary
-
-# Optional: Set up working directory
-WORKDIR /opt/project/
-
-# Copy your project files into the container (if necessary)
-# COPY . /opt/project/
-
-# Set up the entry point for the Glue job
-# (This will depend on how your Glue job is invoked)
-CMD ["python3", "your_glue_job_script.py"]
-
-
-
-
 import sys
 from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
@@ -134,23 +34,21 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql.types import *
 from datetime import datetime,timedelta
-from dateutil.relativedelta import relativedelta
-import pyspark.sql.functions as sf
+from pyspark.sql.functions import unix_timestamp, lit, input_file_name, regexp_extract, udf, col, when
 import pytz
 import logging
 import boto3
 import psycopg2
 import re
-import os
-import ssl
+import json
+import socket
+from dateutil.relativedelta import relativedelta
+import pandas as pd
+import urllib.parse
+import paramiko
+import smbclient
 
-print("ca budle path: ", os.environ.get('AWS_CA_BUNDLE'))
-print("ssl cert budle path: ", ssl.get_default_verify_paths())
-
-
-sys.argv += ['--JOB_NAME', 'job_kwdm_mm_medhok_to_base_pauth', '--kw_s3bucket', 'hf-dev-cdp-kitewheel', '--pref_ddbtbl_arn', 'arn:aws:dynamodb:us-east-1:254161167246:table/hf_preferences_history_tracker']
-
-
+# sys.argv += ['--JOB_NAME', 'hf_cde_formulary_list_test', '--kw_s3bucket', 'hf-dev-cdp-kitewheel', '--process_from_hf_sftp', 'no', '--formularies_hf_sftp_path_medicare', '/SFMC/DEV/Formularies/Medicare/']
 REGION = 'us-east-1'
 NY_TZ = pytz.timezone('US/Eastern')
 
@@ -178,6 +76,16 @@ def get_glue_connection(connection_name):
         'db': match.group(4)
     })
     return creds
+
+
+def get_secret(secret_name, region):
+    session = boto3.session.Session()
+    client = session.client(service_name='secretsmanager', region_name=region)
+    try:
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        return get_secret_value_response['SecretString']
+    except Exception as e:
+        print('Error: ', str(e))
 
 
 def execute_query(query, creds, params=None, fetch_one=False):
@@ -259,248 +167,1259 @@ def write_df_to_postgres(logger, df, table_name, cdm_creds, log_message):
     logger.info(f"End: {log_message}")
 
 
-# @params: [JOB_NAME]
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'pref_ddbtbl_arn'])
+def find_dynamic_folder(creds, share_name, base_folder, folder_pattern):
+    """Find the dynamic folder matching the pattern folder3_yyyy_mytext_yyyymmdd_abc."""
+    smbclient.ClientConfig(username=rf"HEALTHFIRST\{creds['username']}", password=creds['password'])
+    base_path = rf"\\{creds['host']}\{share_name}{base_folder}"
+    print(f'base_path: {base_path}')
+    try:
+        for entry in smbclient.scandir(base_path):
+            if entry.is_dir() and re.match(folder_pattern, entry.name):
+                print(f"Matching dynamic folder found: {entry.name}")
+                return entry.name
+        raise FileNotFoundError(f"No folder matching pattern {folder_pattern} found in {base_folder}")
+    except Exception as e:
+        if isinstance(e, FileNotFoundError):
+            raise e
+        raise Exception(f"Error while searching for dynamic folder: {str(e)}")
 
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-job = Job(glueContext)
-job.init(args['JOB_NAME'], args)
 
-logger = setup_logging(args['JOB_NAME'])
-cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+def find_xlsx_file(creds, share_name, base_folder, folder, prefix):
+    """Find the ZIP file with the specified prefix."""
+    smbclient.ClientConfig(username=rf"HEALTHFIRST\{creds['username']}", password=creds['password'])
+    folder_path = rf"\\{creds['host']}\{share_name}{base_folder}\{folder}"
+    print(f'folder_path: {folder_path}')
+    try:
+        for entry in smbclient.scandir(folder_path):
+            if entry.is_file() and entry.name.startswith(prefix) and entry.name.endswith('.xlsx'):
+                print(f"Matching xlsx file found: {entry.name}")
+                return entry.name
+        raise FileNotFoundError(f"No XLSX file found with prefix {prefix}")
+    except Exception as e:
+        if isinstance(e, FileNotFoundError):
+            raise e
+        raise Exception(f"Error while searching for xlsx file: {str(e)}")
 
-# insert starting job entry into the aws glue job log table.
-job_start_time = log_job_start(cdm_creds, logger, args['JOB_NAME'], 'started')
 
-dyf = glueContext.create_dynamic_frame.from_options(
-    connection_type="dynamodb",
-    connection_options={
-        "dynamodb.export": "ddb",
-        "dynamodb.tableArn": args['pref_ddbtbl_arn'],
-        "dynamodb.unnestDDBJson": True,
-        "dynamodb.s3.bucket": args['kw_s3bucket'],
-        "dynamodb.s3.prefix": "Temp/",
-        "dynamodb.sslEnabled": "false",
+def download_from_smb(creds, share_name, base_folder, folder, filename, local_path):
+    """Download file from SMB share."""
+    smbclient.ClientConfig(username=rf"HEALTHFIRST\{creds['username']}", password=creds['password'])
+    smb_path = rf"\\{creds['host']}\{share_name}{base_folder}\{folder}\{filename}"
+    try:
+        with smbclient.open_file(smb_path, mode='rb') as smb_file:
+            with open(local_path, 'wb') as local_file:
+                local_file.write(smb_file.read())
+        print(f"File is downloaded from {smb_path} to {local_path}")
+    except Exception as e:
+        print(f"Error downloading from SMB: {e}")
+        raise
+
+
+def move_s3_files_to_archive(s3, bucket, frm_prefix, to_prefix):
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=frm_prefix)
+    if 'Contents' in response:
+        for file in response['Contents']:
+            file_key = file['Key']
+            if file_key.endswith('/'):
+                continue
+            filename = file_key.split('/')[-1]
+            file_base, file_ext = filename.rsplit('.', 1)
+            dtm = datetime.now(NY_TZ).strftime("%Y%m%d%H%M%S")
+            new_filename = f"{file_base}_{dtm}.{file_ext}"
+            arc_key = f"{to_prefix}{new_filename}"
+            s3.copy_object(Bucket=bucket, CopySource={'Bucket': bucket, 'Key': file_key}, Key=arc_key)
+            s3.delete_object(Bucket=bucket, Key=file_key)
+            print(f'Moved {file_key} to {arc_key}')
+
+
+def decode_file_name(encoded_name):
+    return urllib.parse.unquote(encoded_name)
+
+
+def upload_files_to_s3_from_hf_share(s3, logger, cde_si_hfshare_creds, kw_s3bucket, folder_pattern, file_prefix, share_name, base_directory, s3_stg_prefix):
+    logger.info(f'folder_pattern: {folder_pattern}')
+    logger.info(f'file_prefix: {file_prefix}')
+
+    folder_name = find_dynamic_folder(cde_si_hfshare_creds, share_name, base_directory, folder_pattern)
+    file_name = find_xlsx_file(cde_si_hfshare_creds, share_name, base_directory, folder_name, file_prefix)
+
+    local_excel_path = os.path.join('/tmp', file_name)
+    local_csv_path = local_excel_path.replace('.xlsx', '.csv')
+    download_from_smb(cde_si_hfshare_creds, share_name, base_directory, folder_name, file_name, local_excel_path)
+    xl_column_names = pd.read_excel(local_excel_path, engine='openpyxl', nrows=0).columns.tolist()
+    df = pd.read_excel(local_excel_path, engine='openpyxl', converters={clmn: str for clmn in xl_column_names})
+    df = df.fillna('')
+    df.to_csv(local_csv_path, index=False)
+    csv_file_name = os.path.basename(local_csv_path)
+    s3.upload_file(Filename=local_csv_path, Bucket=kw_s3bucket, Key=f'{s3_stg_prefix}{csv_file_name}')
+    logger.info(f"Uploaded {csv_file_name} to s3://{kw_s3bucket}/{s3_stg_prefix}{csv_file_name}")
+    os.remove(local_excel_path)
+    os.remove(local_csv_path)
+
+
+def process_from_hf_pharmacy_share(s3, logger, kw_s3bucket, cde_si_hfshare_creds, s3_stg_prefix):
+    logger.info("Processing from hf pharmacy share...")
+    # now_eastern = datetime.now(NY_TZ) + relativedelta(months=-1)
+    now_eastern = datetime.now(NY_TZ)
+    year = now_eastern.year
+    month = now_eastern.strftime('%m')
+    month_formatted = f"{now_eastern.month}_{now_eastern.strftime('%B')}"
+    year_two_digit = now_eastern.strftime('%y')
+    month_three_upper = now_eastern.strftime('%b').upper()
+
+    print(f'now_eastern: {now_eastern}')
+    print(f'year: {year}')
+    print(f'month: {month}')
+    print(f'month_formatted: {month_formatted}')
+    print(f'year_two_digit: {year_two_digit}')
+    print(f'month_three_upper: {month_three_upper}')
+
+    share_name = 'pharmacy'
+    base_directory = rf"\REPORTING\Inbound\Vendors\Caremark\Formularies\Medicare\{year}\{month_formatted}\Marketing"
+    print(f'base_directory: {base_directory}')
+
+    upload_files_to_s3_from_hf_share(s3, logger, cde_si_hfshare_creds, kw_s3bucket,f'Formulary_{year}_GSS_Memb_Matls_Web_Post_.*_Healthfirst', f"HEALTHFIRST-HEALTHFIRST_CY{year_two_digit}_GS (", share_name, base_directory, s3_stg_prefix)
+    upload_files_to_s3_from_hf_share(s3, logger, cde_si_hfshare_creds, kw_s3bucket,f'Formulary_{year}_SEL_Memb_Matls_Web_Post_.*_Healthfirst', f"HEALTHFIRST-HEALTHFIRST_CY{year_two_digit}_SELECT (", share_name, base_directory, s3_stg_prefix)
+
+
+def get_sftp(sftp_host, sftp_user_id, sftp_user_password):
+    transport = paramiko.Transport(sftp_host, 22)
+    transport.connect(username=sftp_user_id, password=sftp_user_password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    return sftp
+
+
+def delete_from_sftp(hf_sftp_creds, sftp_path, file_name):
+    sftp = get_sftp(hf_sftp_creds['host'], hf_sftp_creds['username'], hf_sftp_creds['password'])
+    sftp.remove(os.path.join(sftp_path, file_name))
+    sftp.close()
+
+
+def process_from_hf_sftp(s3, logger, hf_sftp_creds, sftp_path, kw_s3bucket, s3_stg_prefix):
+    logger.info("Processing from hf sftp...")
+    sftp = get_sftp(hf_sftp_creds['host'], hf_sftp_creds['username'], hf_sftp_creds['password'])
+    files = sftp.listdir(sftp_path)
+    today = datetime.now(NY_TZ)
+    # next_month_dt = datetime.now(NY_TZ) + relativedelta(months=1)
+    # next_month_dt = datetime.now(NY_TZ)
+    year_two_digit = today.strftime('%y')
+    logger.info(f'today: {today}')
+    logger.info(f'year_two_digit: {year_two_digit}')
+    sftp_file_exist = False
+    sftp_file_names = []
+    for file_name in files:
+        if (file_name.startswith(f'HEALTHFIRST-HEALTHFIRST_CY{year_two_digit}_GS') or file_name.startswith(f'HEALTHFIRST-HEALTHFIRST_CY{year_two_digit}_SELECT')) and file_name.endswith('.xlsx'):
+            logger.info(f'file_name: {file_name}')
+            sftp_file_exist = True
+            local_excel_path = os.path.join('/tmp', file_name)
+            local_csv_path = local_excel_path.replace('.xlsx', '.csv')
+            sftp.get(os.path.join(sftp_path, file_name), local_excel_path)
+            xl_column_names = pd.read_excel(local_excel_path, engine='openpyxl', nrows=0).columns.tolist()
+            df = pd.read_excel(local_excel_path, engine='openpyxl', converters={clmn: str for clmn in xl_column_names})
+            df = df.fillna('')
+            df.to_csv(local_csv_path, index=False)
+            csv_file_name = os.path.basename(local_csv_path)
+            s3.upload_file(Filename=local_csv_path, Bucket=kw_s3bucket, Key=f'{s3_stg_prefix}{csv_file_name}')
+            logger.info(f"Uploaded {csv_file_name} to s3://{kw_s3bucket}/{s3_stg_prefix}{csv_file_name}")
+            os.remove(local_excel_path)
+            os.remove(local_csv_path)
+            # sftp.remove(os.path.join(sftp_path, file_name))
+            sftp_file_names.append(file_name)
+    if not sftp_file_exist:
+        logger.info(f"No hf sftp files")
+        raise Exception('No hf sftp files exist to process')
+    return sftp_file_names
+
+
+def main():
+    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'process_from_hf_sftp', 'formularies_hf_sftp_path_medicare'])
+
+    sc = SparkContext()
+    glueContext = GlueContext(sc)
+    spark = glueContext.spark_session
+    job = Job(glueContext)
+    job.init(args['JOB_NAME'], args)
+
+    logger = setup_logging(args['JOB_NAME'])
+    cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+    cde_si_hfshare_creds = json.loads(get_secret('cde-si-secret/cde_si_hfshare', REGION))
+    s3 = boto3.client('s3')
+    hf_sftp_creds = json.loads(get_secret('cde-si-secret/hf_sfmc_sftp', REGION))
+    s3_stg_prefix = 'formulary_list/formulary_list_medicare_stage/'
+    s3_arc_prefix = 'formulary_list/formulary_list_medicare_archive/'
+
+    # insert starting job entry into the aws glue job log table.
+    job_start_time = log_job_start(cdm_creds, logger, args['JOB_NAME'], 'started')
+
+    # verify if job was already completed for this month successfully.
+    logger.info("Start: Verify if job was already completed for this month successfully.")
+    month_check_qry = f'''
+    select 1
+    from kwdm.aws_glue_job_execution_tracker
+    where job_name = '{args['JOB_NAME']}' and period_type = 'month' and date_trunc('month', execution_date) = date_trunc('month', current_date) and exclude_run = false
+    limit 1;
+    '''
+    if execute_query(month_check_qry,cdm_creds,fetch_one=True):
+        message = 'The job was already completed for this month, and skipping this run'
+        logger.info(message)
+        # insert ending job entry into the aws glue job log table.
+        log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=message, source_count=None, insert_count=None, update_count=None, delete_count=None)
+        return
+    logger.info("End: Verify if job was already completed for this month successfully.")
+
+    # move files from stage folder to archive
+    logger.info("Start: if files exist in stage s3 archive those")
+    move_s3_files_to_archive(s3, args['kw_s3bucket'], s3_stg_prefix, s3_arc_prefix)
+    logger.info("End: if files exist in stage s3 archive those")
+
+    if args['process_from_hf_sftp'].lower() == 'yes':
+        sftp_file_names = process_from_hf_sftp(s3, logger, hf_sftp_creds, args['formularies_hf_sftp_path_medicare'], args['kw_s3bucket'], s3_stg_prefix)
+    else:
+        process_from_hf_pharmacy_share(s3, logger, args['kw_s3bucket'], cde_si_hfshare_creds, s3_stg_prefix)
+
+    s3_path = f"s3://{args['kw_s3bucket']}/{s3_stg_prefix}*.csv"
+    logger.info(f"Start: read data from the s3 and trasform the data, s3_path: {s3_path}")
+    columns = pd.read_csv(s3_path, nrows=0).columns.tolist()
+    schema = StructType([StructField(clmn, StringType(), True) for clmn in columns])
+    src_df = spark.read.csv(s3_path, header=True, schema=schema)
+    src_df = src_df.withColumn('file_nm', input_file_name())
+    src_df = src_df.withColumn('file_nm', regexp_extract('file_nm', r"([^/]+$)", 0))
+    decode_file_name_udf = udf(decode_file_name, StringType())
+    src_df = src_df.withColumn('file_nm', decode_file_name_udf(src_df.file_nm))
+    datetime_NY = datetime.now(NY_TZ)
+    src_df = (src_df.withColumnRenamed('Formulary ID', 'formulary_id_cd')
+                .withColumnRenamed('Internal ID', 'internal_id_cd')
+                .withColumnRenamed('FSC', 'formulary_source_cd')
+                .withColumnRenamed('GPI', 'gpi_id_cd')
+                .withColumnRenamed('Dosage Form', 'dosage_form_cd')
+                .withColumnRenamed('Route', 'route_of_admin_cd')
+                .withColumnRenamed('Strength', 'drug_strength_unit_nm')
+                .withColumnRenamed('Multi-Source Code', 'multi_source_cd')
+                .withColumnRenamed('Brand Name Code', 'drug_brand_name_cd')
+                .withColumnRenamed('Brand Name', 'drug_brand_nm')
+                .withColumnRenamed('Drug Name', 'drug_nm')
+                .withColumnRenamed('Generic Name', 'generic_nm')
+                .withColumnRenamed('Product Name', 'product_nm')
+                .withColumnRenamed('GPI Generic Name', 'gpi_generic_nm')
+                .withColumnRenamed('Proxy FDA Type', 'proxy_fda_tp_cd')
+                .withColumnRenamed('Drug Type', 'drug_tp_cd')
+                .withColumnRenamed('Gap Coverage', 'gap_coverage_cnt')
+                .withColumnRenamed('Free First Fill', 'free_first_fill_num')
+                .withColumnRenamed('Home Infusion', 'home_infusion_ind_num')
+                .withColumnRenamed('Indication-Based Code', 'indication_based_cd_num')
+                .withColumnRenamed('Select Insulins', 'select_insulins_num')
+                .withColumnRenamed('Non-Extended Days Supply', 'non_extended_day_supply_cnt')
+                .withColumnRenamed('Capped Benefit', 'capped_benefit_ind_num')
+                .withColumnRenamed('Capped Benefit Amount', 'capped_benefit_amt')
+                .withColumnRenamed('Capped Benefit Days', 'capped_benefit_day_cnt')
+                .withColumnRenamed('Quantity Limit Description', 'quantity_limit_dscr')
+                .withColumnRenamed('Note', 'notes_txt')
+                .withColumnRenamed('On Selective', 'on_selective_num')
+                .withColumnRenamed('Maintenance', 'maintenance_num')
+                .withColumnRenamed('Member Doc Case Override', 'member_doc_case_cd')
+                .withColumnRenamed('Proxy NDC', 'proxy_ndc_cd')
+                .withColumnRenamed('RxCUI', 'rxcui_cd')
+                .withColumnRenamed('Tier Level', 'tier_level_num')
+                .withColumnRenamed('Drug Label Type', 'drug_label_tp_cd')
+                .withColumnRenamed('Quantity Limit Type', 'quantity_limit_tp_cnt')
+                .withColumnRenamed('Quantity Limit Amount', 'quantity_limit_amt')
+                .withColumnRenamed('Quantity Limit Days', 'quantity_limit_day_cnt')
+                .withColumnRenamed('PA Type', 'pa_tp_cd')
+                .withColumnRenamed('PA Group', 'pa_group_cd')
+                .withColumnRenamed('Limited Access (Y/N)', 'limited_access_ind')
+                .withColumnRenamed('Therapeutic Category', 'therapeutic_category_cd')
+                .withColumnRenamed('Therapeutic Class', 'theapeutic_class_cd')
+                .withColumnRenamed('Step Therapy Type', 'step_therapy_tp_cd')
+                .withColumnRenamed('Step Therapy Group Count', 'step_therapy_group_cnt')
+                .withColumnRenamed('Step Therapy Group Desc', 'step_therapy_group_dscr')
+                .withColumnRenamed('Step Therapy Group Step', 'step_therapy_group_step_cnt')
+                .withColumn('di_audit_source_system_delete_flg', lit('0'))
+                .withColumn("load_datetime", unix_timestamp(lit(datetime_NY.strftime("%Y-%m-%d %H:%M:%S")), 'yyyy-MM-dd HH:mm:ss').cast("timestamp"))
+                .withColumn('formulary_drug_list_tp_cd', when(col('formulary_id_cd').rlike(".*GSS.*"), lit('GS'))
+                            .when(col('formulary_id_cd').rlike(".*SEL.*"), lit('SNP'))
+                            .otherwise(None))
+    )
+
+    src_df = (src_df.withColumn("gap_coverage_cnt", col("gap_coverage_cnt").cast(IntegerType()))
+              .withColumn("free_first_fill_num", col("free_first_fill_num").cast(IntegerType()))
+              .withColumn("home_infusion_ind_num", col("home_infusion_ind_num").cast(IntegerType()))
+              .withColumn("indication_based_cd_num", col("indication_based_cd_num").cast(IntegerType()))
+              .withColumn("non_extended_day_supply_cnt", col("non_extended_day_supply_cnt").cast(IntegerType()))
+              .withColumn("capped_benefit_ind_num", col("capped_benefit_ind_num").cast(IntegerType()))
+              .withColumn("capped_benefit_amt", col("capped_benefit_amt").cast(DecimalType(15,2)))
+              .withColumn("capped_benefit_day_cnt", col("capped_benefit_day_cnt").cast(IntegerType()))
+              .withColumn("on_selective_num", col("on_selective_num").cast(IntegerType()))
+              .withColumn("maintenance_num", col("maintenance_num").cast(IntegerType()))
+              .withColumn("tier_level_num", col("tier_level_num").cast(IntegerType()))
+              .withColumn("quantity_limit_tp_cnt", col("quantity_limit_tp_cnt").cast(IntegerType()))
+              .withColumn("quantity_limit_amt", col("quantity_limit_amt").cast(DecimalType(15, 2)))
+              .withColumn("quantity_limit_day_cnt", col("quantity_limit_day_cnt").cast(IntegerType()))
+              .withColumn("pa_tp_cd", col("pa_tp_cd").cast(IntegerType()))
+              .withColumn("step_therapy_group_cnt", col("step_therapy_group_cnt").cast(IntegerType()))
+              .withColumn("step_therapy_group_step_cnt", col("step_therapy_group_step_cnt").cast(IntegerType()))
+    )
+
+    src_df_cnt = src_df.count()
+    src_df.printSchema()
+    src_df.show(truncate=False)
+    distinct_file_name = src_df.select("file_nm").distinct().rdd.flatMap(lambda x: x).collect()
+    file_names = "; ".join(distinct_file_name)
+    print(f'src_df: {src_df_cnt}')
+    dist_drug_list_tp_cd = [row['formulary_drug_list_tp_cd'] for row in src_df.select("formulary_drug_list_tp_cd").distinct().collect()]
+    drug_list_tp_cd_str = ', '.join(f"'{value}'" for value in dist_drug_list_tp_cd)
+    logger.info(f"drug_list_tp_cd_str: {drug_list_tp_cd_str}")
+    logger.info(f"End: read data from the s3 and trasform the data, s3_path: {s3_path}")
+
+    stage_table = 'stg_hf_cde_formulary_list_medicare'
+    logger.info(f"Start: truncate stage table kwdm.{stage_table}")
+    execute_query(f"truncate table kwdm.{stage_table};", cdm_creds)
+    logger.info(f"End: truncate stage table kwdm.{stage_table}")
+
+    write_df_to_postgres(logger, src_df, f'kwdm.{stage_table}', cdm_creds, f'write data into kwdm.{stage_table}')
+
+    columns = "formulary_id_cd, formulary_drug_list_tp_cd, internal_id_cd, formulary_source_cd, gpi_id_cd, dosage_form_cd, route_of_admin_cd, drug_strength_unit_nm, multi_source_cd, drug_brand_name_cd, drug_brand_nm, drug_nm, generic_nm, product_nm, gpi_generic_nm, proxy_fda_tp_cd, drug_tp_cd, gap_coverage_cnt, free_first_fill_num, home_infusion_ind_num, indication_based_cd_num, select_insulins_num, non_extended_day_supply_cnt, capped_benefit_ind_num, capped_benefit_amt, capped_benefit_day_cnt, quantity_limit_dscr, notes_txt, on_selective_num, maintenance_num, member_doc_case_cd, proxy_ndc_cd, rxcui_cd, tier_level_num, drug_label_tp_cd, quantity_limit_tp_cnt, quantity_limit_amt, quantity_limit_day_cnt, pa_tp_cd, pa_group_cd, limited_access_ind, therapeutic_category_cd, theapeutic_class_cd, step_therapy_tp_cd, step_therapy_group_cnt, step_therapy_group_dscr, step_therapy_group_step_cnt, file_nm, di_audit_insert_batch_num_cd, di_audit_update_batch_num_cd, di_audit_insert_dtm, di_audit_update_dtm, di_audit_source_system_cd, di_audit_source_system_key, di_audit_source_system_delete_flg, di_audit_process_update_cd, di_audit_check_sum_hash, di_audit_cdc_process_update_dtm, di_audit_cdc_process_update_cd, di_audit_cdc_record_seq_num, di_audit_pk_hash_key, load_datetime"
+
+    logger.info("Start: Update delete flage in target table and insert data into target table")
+    updt_insrt_hf_cde_formulary_list_qry = f'''
+    update kwdm.hf_cde_formulary_list
+    set di_audit_source_system_delete_flg = '1'
+    where  formulary_drug_list_tp_cd in ({drug_list_tp_cd_str}) and di_audit_source_system_delete_flg != '1'
+    ;
+    insert into kwdm.hf_cde_formulary_list({columns})
+    select {columns} from kwdm.{stage_table}
+    ;
+    '''
+    execute_query(updt_insrt_hf_cde_formulary_list_qry, cdm_creds)
+    logger.info("End: Update delete flage in target table and insert data into target table")
+
+    logger.info("Start: insert entry into kwdm.aws_glue_job_execution_tracker for this run")
+    # log the job run into kwdm.aws_glue_job_execution_tracker
+    log_month_check_qry = f'''
+    insert into kwdm.aws_glue_job_execution_tracker(job_name, file_names, execution_date, period_type)
+    values('{args['JOB_NAME']}', '{file_names}', current_timestamp, 'month')
+    '''
+    execute_query(log_month_check_qry,cdm_creds)
+    logger.info("End: insert entry into kwdm.aws_glue_job_execution_tracker for this run")
+
+    if args['process_from_hf_sftp'].lower() == 'yes':
+        logger.info("Start: Remove sftp file")
+        for file_name in sftp_file_names:
+            delete_from_sftp(hf_sftp_creds, args['formularies_hf_sftp_path_medicare'], file_name)
+        logger.info("End: Remove sftp file")
+
+    # insert ending job entry into the aws glue job log table.
+    log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=f"file_names: {file_names}", source_count=src_df_cnt, insert_count=src_df_cnt, update_count=None, delete_count=None)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+Job 2:
+
+"""
+Job Description:
+This job reads XLSX files from the pharmacy share and writes the data into the KWDM table kwdm.hf_cde_formulary_list for EP and QHP.
+It is scheduled to run monthly on 1st, 2nd & 3rd early hours of each month.
+
+Fiel and Directory Structure:
+If the job runs in January, it will process the files from the January directories. Below are examples of January 2025 files and directories:
+
+- Share drive: pharmacy
+- EP QHP Directory: /REPORTING/Inbound/Vendors/Caremark/Formularies/QHP_EP_HFIC/2025/1.Jan/Healthfirst_January 2025_EP-QHP Formulary/
+- EP QHP file name: January Formulary.xlsx
+- xlsx sheet name: Sheet 1
+
+Execution Behavior:
+This job runs only once per month.
+Job execution is tracked in the kwdm.aws_glue_job_execution_tracker table.
+If an entry exists for a given month, the job will skip processing the files.
+To override this, set the flag exclude_run = false for all entries for that month.
+
+Error handling and manual execution:
+If the directory structure is not as expected, files can be copied to an SFTP location and triggered manually by passing the parameter process_from_hf_sftp = yes.
+SFTP location for production: /SFMC/PROD/Formularies/EpQhp
+"""
+
+import os
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.types import *
+from datetime import datetime,timedelta
+from pyspark.sql.functions import unix_timestamp, lit, input_file_name, regexp_extract, udf, col, when, concat_ws, lpad, concat
+import pytz
+import logging
+import boto3
+import psycopg2
+import re
+import json
+import socket
+from dateutil.relativedelta import relativedelta
+import pandas as pd
+import urllib.parse
+import paramiko
+import smbclient
+
+# sys.argv += ['--JOB_NAME', 'cde_si_job_ep_qhp_hf_cde_formulary_list_test', '--kw_s3bucket', 'hf-dev-cdp-kitewheel', '--process_from_hf_sftp', 'no', '--formularies_hf_sftp_path_epqhp', '/SFMC/DEV/Formularies/EpQhp/']
+REGION = 'us-east-1'
+NY_TZ = pytz.timezone('US/Eastern')
+
+
+def setup_logging(job_name):
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logger = logging.getLogger(job_name)
+    logger.setLevel(logging.INFO)
+    return logger
+
+
+def get_glue_connection(connection_name):
+    glue_client = boto3.client('glue', region_name=REGION)
+    response = glue_client.get_connection(Name=connection_name, HidePassword=False)
+    creds = {
+        'username': response['Connection']['ConnectionProperties']['USERNAME'],
+        'password': response['Connection']['ConnectionProperties']['PASSWORD'],
+        'url': response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
     }
-)
-
-sdf = dyf.toDF()
-sdf = sdf.select('channel_key', 'channel_value', 'member_id', 'subject_id', 'option_value', 'last_name', 'option_name', 'source', 'is_default', 'is_delete', 'custom_preferences', 'event_type', 'purpose_name', 'channel_enrollment_type', 'effective_date', 'UUID', 'action_timestamp', 'channel_type', 'first_name', 'linked_subject_id')
-
-datetime_NY = datetime.now(NY_TZ)
-sdf = sdf.withColumn("load_datetime", sf.unix_timestamp(sf.lit(datetime_NY.strftime("%Y-%m-%d %H:%M:%S")),'yyyy-MM-dd HH:mm:ss').cast("timestamp"))
-sdf.printSchema()
-sdf.show(truncate=False)
-sdf_cnt = sdf.count()
-logger.info(f'Source df count: {sdf_cnt}')
-
-write_df_to_postgres(logger, sdf, f'public.preference_mgmt_dynamo_data_test', cdm_creds, f'write data into public.preference_mgmt_dynamo_data_test')
-
-log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=None, source_count=None, insert_count=sdf_cnt, update_count=None, delete_count=None)
-
-job.commit()
+    match = re.match(r'jdbc:(\w+)://([^:/]+):(\d+)/([^?]+)', creds['url'])
+    creds.update({
+        'connection_type': match.group(1),
+        'host': match.group(2),
+        'port': match.group(3),
+        'db': match.group(4)
+    })
+    return creds
 
 
+def get_secret(secret_name, region):
+    session = boto3.session.Session()
+    client = session.client(service_name='secretsmanager', region_name=region)
+    try:
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        return get_secret_value_response['SecretString']
+    except Exception as e:
+        print('Error: ', str(e))
 
 
-/usr/local/bin/python3 /opt/project/136_pref_mgmt_data_load/job_dynamodb_extract_preference_mgmt_refresh.py 
-ca budle path:  /root/.aws/nskp_config/netskope-cert-bundle.pem
-ssl cert budle path:  DefaultVerifyPaths(cafile='/etc/pki/tls/cert.pem', capath='/etc/pki/tls/certs', openssl_cafile_env='SSL_CERT_FILE', openssl_cafile='/etc/pki/tls/cert.pem', openssl_capath_env='SSL_CERT_DIR', openssl_capath='/etc/pki/tls/certs')
-SLF4J: Class path contains multiple SLF4J bindings.
-SLF4J: Found binding in [jar:file:/home/glue_user/spark/jars/log4j-slf4j-impl-2.17.2.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-SLF4J: Found binding in [jar:file:/home/glue_user/spark/jars/slf4j-reload4j-1.7.36.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-SLF4J: Found binding in [jar:file:/home/glue_user/aws-glue-libs/jars/log4j-slf4j-impl-2.17.2.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-SLF4J: Found binding in [jar:file:/home/glue_user/aws-glue-libs/jars/slf4j-reload4j-1.7.36.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
-SLF4J: Actual binding is of type [org.apache.logging.slf4j.Log4jLoggerFactory]
-Setting default log level to "WARN".
-To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
-/home/glue_user/spark/python/pyspark/sql/context.py:112: FutureWarning: Deprecated in 3.0.0. Use SparkSession.builder.getOrCreate() instead.
-  warnings.warn(
-2025-03-31 14:10:33 INFO job_kwdm_mm_medhok_to_base_pauth: Start: Insert job start entry into aws_glue_job_log
-2025-03-31 14:10:34 INFO job_kwdm_mm_medhok_to_base_pauth: End: Insert job start entry into aws_glue_job_log
-25/03/31 14:10:50 ERROR DynamoExportConnection: Exception with DynamoDB ExportTableToPointInTimeRequest
-com.amazonaws.SdkClientException: Unable to execute HTTP request: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleRetryableException(AmazonHttpClient.java:1216)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1162)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:811)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:779)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:753)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:713)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:695)
-	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:559)
-	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:539)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.doInvoke(AmazonDynamoDBClient.java:6243)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6210)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6199)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.executeExportTableToPointInTime(AmazonDynamoDBClient.java:3116)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.exportTableToPointInTime(AmazonDynamoDBClient.java:3083)
-	at com.amazonaws.services.glue.connections.DynamoExportConnection.dynamodbexport(DynamoExportConnection.scala:80)
-	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:718)
-	at com.amazonaws.services.glue.DataSource.getDynamicFrame(DataSource.scala:104)
-	at com.amazonaws.services.glue.DataSource.getDynamicFrame$(DataSource.scala:104)
-	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:714)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:498)
-	at py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
-	at py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
-	at py4j.Gateway.invoke(Gateway.java:282)
-	at py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
-	at py4j.commands.CallCommand.execute(CallCommand.java:79)
-	at py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:182)
-	at py4j.ClientServerConnection.run(ClientServerConnection.java:106)
-	at java.lang.Thread.run(Thread.java:750)
-Caused by: javax.net.ssl.SSLHandshakeException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at sun.security.ssl.Alert.createSSLException(Alert.java:131)
-	at sun.security.ssl.TransportContext.fatal(TransportContext.java:331)
-	at sun.security.ssl.TransportContext.fatal(TransportContext.java:274)
-	at sun.security.ssl.TransportContext.fatal(TransportContext.java:269)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1356)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.onConsumeCertificate(CertificateMessage.java:1231)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.consume(CertificateMessage.java:1174)
-	at sun.security.ssl.SSLHandshake.consume(SSLHandshake.java:377)
-	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:444)
-	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:422)
-	at sun.security.ssl.TransportContext.dispatch(TransportContext.java:182)
-	at sun.security.ssl.SSLTransport.decode(SSLTransport.java:152)
-	at sun.security.ssl.SSLSocketImpl.decode(SSLSocketImpl.java:1401)
-	at sun.security.ssl.SSLSocketImpl.readHandshakeRecord(SSLSocketImpl.java:1309)
-	at sun.security.ssl.SSLSocketImpl.startHandshake(SSLSocketImpl.java:440)
-	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.createLayeredSocket(SSLConnectionSocketFactory.java:436)
-	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.connectSocket(SSLConnectionSocketFactory.java:384)
-	at com.amazonaws.http.conn.ssl.SdkTLSSocketFactory.connectSocket(SdkTLSSocketFactory.java:142)
-	at org.apache.http.impl.conn.DefaultHttpClientConnectionOperator.connect(DefaultHttpClientConnectionOperator.java:142)
-	at org.apache.http.impl.conn.PoolingHttpClientConnectionManager.connect(PoolingHttpClientConnectionManager.java:374)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:498)
-	at com.amazonaws.http.conn.ClientConnectionManagerFactory$Handler.invoke(ClientConnectionManagerFactory.java:76)
-	at com.amazonaws.http.conn.$Proxy32.connect(Unknown Source)
-	at org.apache.http.impl.execchain.MainClientExec.establishRoute(MainClientExec.java:393)
-	at org.apache.http.impl.execchain.MainClientExec.execute(MainClientExec.java:236)
-	at org.apache.http.impl.execchain.ProtocolExec.execute(ProtocolExec.java:186)
-	at org.apache.http.impl.client.InternalHttpClient.doExecute(InternalHttpClient.java:185)
-	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:83)
-	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:56)
-	at com.amazonaws.http.apache.client.impl.SdkHttpClient.execute(SdkHttpClient.java:72)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1343)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1154)
-	... 29 more
-Caused by: sun.security.validator.ValidatorException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:456)
-	at sun.security.validator.PKIXValidator.engineValidate(PKIXValidator.java:323)
-	at sun.security.validator.Validator.validate(Validator.java:271)
-	at sun.security.ssl.X509TrustManagerImpl.validate(X509TrustManagerImpl.java:315)
-	at sun.security.ssl.X509TrustManagerImpl.checkTrusted(X509TrustManagerImpl.java:223)
-	at sun.security.ssl.X509TrustManagerImpl.checkServerTrusted(X509TrustManagerImpl.java:129)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1340)
-	... 59 more
-Caused by: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at sun.security.provider.certpath.SunCertPathBuilder.build(SunCertPathBuilder.java:148)
-	at sun.security.provider.certpath.SunCertPathBuilder.engineBuild(SunCertPathBuilder.java:129)
-	at java.security.cert.CertPathBuilder.build(CertPathBuilder.java:280)
-	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:451)
-	... 65 more
-Traceback (most recent call last):
-  File "/opt/project/136_pref_mgmt_data_load/job_dynamodb_extract_preference_mgmt_refresh.py", line 149, in <module>
-    dyf = glueContext.create_dynamic_frame.from_options(
-  File "/home/glue_user/aws-glue-libs/PyGlue.zip/awsglue/dynamicframe.py", line 609, in from_options
-  File "/home/glue_user/aws-glue-libs/PyGlue.zip/awsglue/context.py", line 237, in create_dynamic_frame_from_options
-  File "/home/glue_user/aws-glue-libs/PyGlue.zip/awsglue/data_source.py", line 36, in getFrame
-  File "/home/glue_user/spark/python/lib/py4j-0.10.9.5-src.zip/py4j/java_gateway.py", line 1321, in __call__
-  File "/home/glue_user/spark/python/pyspark/sql/utils.py", line 190, in deco
-    return f(*a, **kw)
-  File "/home/glue_user/spark/python/lib/py4j-0.10.9.5-src.zip/py4j/protocol.py", line 326, in get_return_value
-py4j.protocol.Py4JJavaError: An error occurred while calling o53.getDynamicFrame.
-: com.amazonaws.SdkClientException: Unable to execute HTTP request: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.handleRetryableException(AmazonHttpClient.java:1216)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1162)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.doExecute(AmazonHttpClient.java:811)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeWithTimer(AmazonHttpClient.java:779)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.execute(AmazonHttpClient.java:753)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.access$500(AmazonHttpClient.java:713)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutionBuilderImpl.execute(AmazonHttpClient.java:695)
-	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:559)
-	at com.amazonaws.http.AmazonHttpClient.execute(AmazonHttpClient.java:539)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.doInvoke(AmazonDynamoDBClient.java:6243)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6210)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.invoke(AmazonDynamoDBClient.java:6199)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.executeExportTableToPointInTime(AmazonDynamoDBClient.java:3116)
-	at com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient.exportTableToPointInTime(AmazonDynamoDBClient.java:3083)
-	at com.amazonaws.services.glue.connections.DynamoExportConnection.dynamodbexport(DynamoExportConnection.scala:80)
-	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:718)
-	at com.amazonaws.services.glue.DataSource.getDynamicFrame(DataSource.scala:104)
-	at com.amazonaws.services.glue.DataSource.getDynamicFrame$(DataSource.scala:104)
-	at com.amazonaws.services.glue.DynamoExportDataSource.getDynamicFrame(DataSource.scala:714)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:498)
-	at py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
-	at py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
-	at py4j.Gateway.invoke(Gateway.java:282)
-	at py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
-	at py4j.commands.CallCommand.execute(CallCommand.java:79)
-	at py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:182)
-	at py4j.ClientServerConnection.run(ClientServerConnection.java:106)
-	at java.lang.Thread.run(Thread.java:750)
-Caused by: javax.net.ssl.SSLHandshakeException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at sun.security.ssl.Alert.createSSLException(Alert.java:131)
-	at sun.security.ssl.TransportContext.fatal(TransportContext.java:331)
-	at sun.security.ssl.TransportContext.fatal(TransportContext.java:274)
-	at sun.security.ssl.TransportContext.fatal(TransportContext.java:269)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1356)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.onConsumeCertificate(CertificateMessage.java:1231)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.consume(CertificateMessage.java:1174)
-	at sun.security.ssl.SSLHandshake.consume(SSLHandshake.java:377)
-	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:444)
-	at sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:422)
-	at sun.security.ssl.TransportContext.dispatch(TransportContext.java:182)
-	at sun.security.ssl.SSLTransport.decode(SSLTransport.java:152)
-	at sun.security.ssl.SSLSocketImpl.decode(SSLSocketImpl.java:1401)
-	at sun.security.ssl.SSLSocketImpl.readHandshakeRecord(SSLSocketImpl.java:1309)
-	at sun.security.ssl.SSLSocketImpl.startHandshake(SSLSocketImpl.java:440)
-	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.createLayeredSocket(SSLConnectionSocketFactory.java:436)
-	at org.apache.http.conn.ssl.SSLConnectionSocketFactory.connectSocket(SSLConnectionSocketFactory.java:384)
-	at com.amazonaws.http.conn.ssl.SdkTLSSocketFactory.connectSocket(SdkTLSSocketFactory.java:142)
-	at org.apache.http.impl.conn.DefaultHttpClientConnectionOperator.connect(DefaultHttpClientConnectionOperator.java:142)
-	at org.apache.http.impl.conn.PoolingHttpClientConnectionManager.connect(PoolingHttpClientConnectionManager.java:374)
-	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
-	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:498)
-	at com.amazonaws.http.conn.ClientConnectionManagerFactory$Handler.invoke(ClientConnectionManagerFactory.java:76)
-	at com.amazonaws.http.conn.$Proxy32.connect(Unknown Source)
-	at org.apache.http.impl.execchain.MainClientExec.establishRoute(MainClientExec.java:393)
-	at org.apache.http.impl.execchain.MainClientExec.execute(MainClientExec.java:236)
-	at org.apache.http.impl.execchain.ProtocolExec.execute(ProtocolExec.java:186)
-	at org.apache.http.impl.client.InternalHttpClient.doExecute(InternalHttpClient.java:185)
-	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:83)
-	at org.apache.http.impl.client.CloseableHttpClient.execute(CloseableHttpClient.java:56)
-	at com.amazonaws.http.apache.client.impl.SdkHttpClient.execute(SdkHttpClient.java:72)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeOneRequest(AmazonHttpClient.java:1343)
-	at com.amazonaws.http.AmazonHttpClient$RequestExecutor.executeHelper(AmazonHttpClient.java:1154)
-	... 29 more
-Caused by: sun.security.validator.ValidatorException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:456)
-	at sun.security.validator.PKIXValidator.engineValidate(PKIXValidator.java:323)
-	at sun.security.validator.Validator.validate(Validator.java:271)
-	at sun.security.ssl.X509TrustManagerImpl.validate(X509TrustManagerImpl.java:315)
-	at sun.security.ssl.X509TrustManagerImpl.checkTrusted(X509TrustManagerImpl.java:223)
-	at sun.security.ssl.X509TrustManagerImpl.checkServerTrusted(X509TrustManagerImpl.java:129)
-	at sun.security.ssl.CertificateMessage$T13CertificateConsumer.checkServerCerts(CertificateMessage.java:1340)
-	... 59 more
-Caused by: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
-	at sun.security.provider.certpath.SunCertPathBuilder.build(SunCertPathBuilder.java:148)
-	at sun.security.provider.certpath.SunCertPathBuilder.engineBuild(SunCertPathBuilder.java:129)
-	at java.security.cert.CertPathBuilder.build(CertPathBuilder.java:280)
-	at sun.security.validator.PKIXValidator.doBuild(PKIXValidator.java:451)
-	... 65 more
+def execute_query(query, creds, params=None, fetch_one=False):
+    """
+    Executes a SQL query on a PostgreSQL database with optional parameters.
+    Args:
+    - query: SQL query string.
+    - creds: Dictionary containing database credentials.
+    - params: Tuple of parameters for the SQL query (optional).
+    - fetch_one: Boolean indicating whether to fetch only one record from the query results
+    Retuns:
+    - if fetch_one is True, returns a single record or None
+    - if fetch_one is False, returns the number of affected rows.
+    """
+    conn = psycopg2.connect(database=creds['db'], user=creds['username'], password=creds['password'], host=creds['host'], port=creds['port'])
+    cur = conn.cursor()
+
+    try:
+        if params:
+            cur.execute(query, params)
+        else:
+            cur.execute(query)
+
+        if fetch_one:
+            result = cur.fetchone()
+        else:
+            conn.commit()
+            result = cur.rowcount
+    finally:
+        cur.close()
+        conn.close()
+    return result
 
 
-Process finished with exit code 1
+def log_job_start(creds, logger, job_name, status):
+    logger.info("Start: Insert job start entry into aws_glue_job_log")
+    job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Parameterized query to insert the start entry
+    query = """
+        INSERT INTO kwdm.aws_glue_job_log (job_name, start_time, job_status)
+        VALUES (%s, %s, %s);
+    """
+    execute_query(query, creds, (job_name, job_start_dtm, status))
+    logger.info("End: Insert job start entry into aws_glue_job_log")
+    return job_start_dtm
+
+
+def log_job_end(creds, logger, job_name, job_start_dtm, status, comments=None, source_count=None, insert_count=None, update_count=None, delete_count=None):
+    logger.info("Start: Update job end entry in aws_glue_job_log")
+    job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Construct the SQL query with parameterized values
+    query = """
+        UPDATE kwdm.aws_glue_job_log 
+        SET source_count = %s, 
+            insert_count = %s, 
+            update_count = %s, 
+            delete_count = %s, 
+            comments = %s, 
+            end_time = %s, 
+            job_status = %s 
+        WHERE job_name = %s AND start_time = %s;
+    """
+    # Execute the query, passing None for any values that are not provided
+    execute_query(query, creds, (source_count, insert_count, update_count, delete_count, comments, job_end_dtm, status, job_name, job_start_dtm))
+    logger.info("End: Update job end entry in aws_glue_job_log")
+
+
+def write_df_to_postgres(logger, df, table_name, cdm_creds, log_message):
+    logger.info(f"Start: {log_message}")
+    (df.write.format("jdbc")
+     .option("url", cdm_creds['url'])
+     .option("driver", "org.postgresql.Driver")
+     .option("dbtable", table_name)
+     .mode("append")
+     .option("user", cdm_creds['username'])
+     .option("password", cdm_creds['password'])
+     .save()
+    )
+    logger.info(f"End: {log_message}")
+
+
+def download_from_smb(creds, share_name, search_path, filename, local_path):
+    """Download file from SMB share."""
+    smbclient.ClientConfig(username=rf"HEALTHFIRST\{creds['username']}", password=creds['password'])
+    file_found = False
+    for folder in search_path:
+        smb_path = rf"\\{creds['host']}\{share_name}{folder}\{filename}"
+        try:
+            with smbclient.open_file(smb_path, mode='rb') as smb_file:
+                with open(local_path, 'wb') as local_file:
+                    local_file.write(smb_file.read())
+            print(f"File is downloaded from {smb_path} to {local_path}")
+            file_found = True
+            break
+        except Exception as e:
+            print(f"Error downloading from SMB: {e}")
+    if not file_found:
+        raise FileNotFoundError(f"File {filename} not found in any directory {search_path}")
+
+
+def move_s3_files_to_archive(s3, bucket, frm_prefix, to_prefix):
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=frm_prefix)
+    if 'Contents' in response:
+        for file in response['Contents']:
+            file_key = file['Key']
+            if file_key.endswith('/'):
+                continue
+            filename = file_key.split('/')[-1]
+            file_base, file_ext = filename.rsplit('.', 1)
+            dtm = datetime.now(NY_TZ).strftime("%Y%m%d%H%M%S")
+            new_filename = f"{file_base}_{dtm}.{file_ext}"
+            arc_key = f"{to_prefix}{new_filename}"
+            s3.copy_object(Bucket=bucket, CopySource={'Bucket': bucket, 'Key': file_key}, Key=arc_key)
+            s3.delete_object(Bucket=bucket, Key=file_key)
+            print(f'Moved {file_key} to {arc_key}')
+
+
+def decode_file_name(encoded_name):
+    return urllib.parse.unquote(encoded_name)
+
+
+def process_from_hf_pharmacy_share(s3, logger, kw_s3bucket, s3_stg_prefix, cde_si_hfshare_creds):
+    logger.info("Processing from hf pharmacy share...")
+    now_eastern = datetime.now(NY_TZ)
+    # now_eastern = datetime.now(NY_TZ) - relativedelta(months=1)
+    year = now_eastern.year
+    month_num = now_eastern.month
+    month_short_txt = now_eastern.strftime('%b').capitalize()
+    month_long_txt = now_eastern.strftime('%B').capitalize()
+
+    print(f'now_eastern: {now_eastern}')
+    print(f'year: {year}')
+    print(f'month_num: {month_num}')
+    print(f'month_short_txt: {month_short_txt}')
+    print(f'month_long_txt: {month_long_txt}')
+
+    share_name = 'pharmacy'
+    search_path = [rf'\REPORTING\Inbound\Vendors\Caremark\Formularies\QHP_EP_HFIC\{year}\{month_num}.{month_short_txt}\Healthfirst_{month_long_txt} {year}_EP-QHP Formulary', rf'\REPORTING\Inbound\Vendors\Caremark\Formularies\QHP_EP_HFIC\{year}\{month_num}.{month_short_txt}' ]
+    file_name = f'{month_long_txt} Formulary.xlsx'
+    logger.info(f'search_path: {search_path}')
+    logger.info(f'file_name: {file_name}')
+
+    local_excel_path = os.path.join('/tmp', file_name)
+    local_csv_path = local_excel_path.replace('.xlsx', '.csv')
+    download_from_smb(cde_si_hfshare_creds, share_name, search_path, file_name, local_excel_path)
+    xl_column_names = pd.read_excel(local_excel_path, sheet_name='Sheet 1', engine='openpyxl', nrows=0).columns.tolist()
+    df = pd.read_excel(local_excel_path, sheet_name="Sheet 1", engine='openpyxl', converters={clmn: str for clmn in xl_column_names})
+    df = df.fillna('')
+    df.to_csv(local_csv_path, index=False)
+    csv_file_name = os.path.basename(local_csv_path)
+    s3.upload_file(Filename=local_csv_path, Bucket=kw_s3bucket, Key=f'{s3_stg_prefix}{csv_file_name}')
+    logger.info(f"Uploaded {csv_file_name} to s3://{kw_s3bucket}/{s3_stg_prefix}{csv_file_name}")
+    os.remove(local_excel_path)
+    os.remove(local_csv_path)
+
+
+def get_sftp(sftp_host, sftp_user_id, sftp_user_password):
+    transport = paramiko.Transport(sftp_host, 22)
+    transport.connect(username=sftp_user_id, password=sftp_user_password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    return sftp
+
+
+def delete_from_sftp(hf_sftp_creds, sftp_path, file_name):
+    sftp = get_sftp(hf_sftp_creds['host'], hf_sftp_creds['username'], hf_sftp_creds['password'])
+    sftp.remove(os.path.join(sftp_path, file_name))
+    sftp.close()
+
+
+def process_from_hf_sftp(s3, logger, hf_sftp_creds, sftp_path, kw_s3bucket, file_name, s3_stg_prefix):
+    logger.info("Processing from hf sftp...")
+    sftp = get_sftp(hf_sftp_creds['host'], hf_sftp_creds['username'], hf_sftp_creds['password'])
+    files = sftp.listdir(sftp_path)
+    sftp_file_exist = False
+    for file in files:
+        if file == file_name:
+            logger.info(f'file_name: {file_name}')
+            sftp_file_exist = True
+            local_excel_path = os.path.join('/tmp', file_name)
+            local_csv_path = local_excel_path.replace('.xlsx', '.csv')
+            sftp.get(os.path.join(sftp_path, file_name), local_excel_path)
+            xl_column_names = pd.read_excel(local_excel_path, sheet_name='Sheet 1', engine='openpyxl', nrows=0).columns.tolist()
+            df = pd.read_excel(local_excel_path, sheet_name="Sheet 1", engine='openpyxl', converters={clmn: str for clmn in xl_column_names})
+            df = df.fillna('')
+            df.to_csv(local_csv_path, index=False)
+            csv_file_name = os.path.basename(local_csv_path)
+            s3.upload_file(Filename=local_csv_path, Bucket=kw_s3bucket, Key=f'{s3_stg_prefix}{csv_file_name}')
+            logger.info(f"Uploaded {csv_file_name} to s3://{kw_s3bucket}/{s3_stg_prefix}{csv_file_name}")
+            os.remove(local_excel_path)
+            os.remove(local_csv_path)
+            # sftp.remove(os.path.join(sftp_path, file_name))
+    if not sftp_file_exist:
+        logger.info(f"No hf sftp files")
+        sftp.close()
+        raise Exception('No hf sftp files exist to process')
+    sftp.close()
+
+
+def main():
+    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'process_from_hf_sftp', 'formularies_hf_sftp_path_epqhp'])
+
+    sc = SparkContext()
+    glueContext = GlueContext(sc)
+    spark = glueContext.spark_session
+    job = Job(glueContext)
+    job.init(args['JOB_NAME'], args)
+
+    logger = setup_logging(args['JOB_NAME'])
+    cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+    cde_si_hfshare_creds = json.loads(get_secret('cde-si-secret/cde_si_hfshare', REGION))
+    s3 = boto3.client('s3')
+    hf_sftp_creds = json.loads(get_secret('cde-si-secret/hf_sfmc_sftp', REGION))
+    s3_stg_prefix = 'formulary_list/formulary_list_epqhp_stage/'
+    s3_arc_prefix = 'formulary_list/formulary_list_epqhp_archive/'
+    # today = datetime.now(NY_TZ) + relativedelta(months=1)
+    today = datetime.now(NY_TZ)
+    month = today.strftime('%B')
+    logger.info(f'today: {today}')
+    logger.info(f'month: {month}')
+    file_name = f'{month} Formulary.xlsx'
+
+    # insert starting job entry into the aws glue job log table.
+    job_start_time = log_job_start(cdm_creds, logger, args['JOB_NAME'], 'started')
+
+    # verify if job was already completed for this month successfully.
+    logger.info("Start: Verify if job was already completed for this month successfully.")
+    month_check_qry = f'''
+    select 1
+    from kwdm.aws_glue_job_execution_tracker
+    where job_name = '{args['JOB_NAME']}' and period_type = 'month' and date_trunc('month', execution_date) = date_trunc('month', current_date) and exclude_run = false
+    limit 1;
+    '''
+    if execute_query(month_check_qry,cdm_creds,fetch_one=True):
+        message = 'The job was already completed for this month, and skipping this run'
+        logger.info(message)
+        # insert ending job entry into the aws glue job log table.
+        log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=message, source_count=None, insert_count=None, update_count=None, delete_count=None)
+        return
+    logger.info("End: Verify if job was already completed for this month successfully.")
+
+    # move files from stage folder to archive
+    logger.info("Start: if files exist in stage s3 archive those")
+    move_s3_files_to_archive(s3, args['kw_s3bucket'], s3_stg_prefix, s3_arc_prefix)
+    logger.info("End: if files exist in stage s3 archive those")
+
+    if args['process_from_hf_sftp'].lower() == 'yes':
+        process_from_hf_sftp(s3, logger, hf_sftp_creds, args['formularies_hf_sftp_path_epqhp'], args['kw_s3bucket'], file_name, s3_stg_prefix)
+    else:
+        process_from_hf_pharmacy_share(s3, logger, args['kw_s3bucket'], s3_stg_prefix, cde_si_hfshare_creds)
+
+    s3_path = f"s3://{args['kw_s3bucket']}/{s3_stg_prefix}*.csv"
+    logger.info(f"Start: read data from the s3 and trasform the data, s3_path: {s3_path}")
+    columns = pd.read_csv(s3_path, nrows=0).columns.tolist()
+    schema = StructType([StructField(clmn, StringType(), True) for clmn in columns])
+    src_df = spark.read.csv(s3_path, header=True, schema=schema)
+    src_df = src_df.withColumn('file_nm', input_file_name())
+    src_df = src_df.withColumn('file_nm', regexp_extract('file_nm', r"([^/]+$)", 0))
+    decode_file_name_udf = udf(decode_file_name, StringType())
+    src_df = src_df.withColumn('file_nm', decode_file_name_udf(src_df.file_nm))
+    # src_df.printSchema()
+    # src_df.show(truncate=False)
+    datetime_NY = datetime.now(NY_TZ)
+    src_df = (src_df.withColumnRenamed('Formulary ID', 'formulary_id_cd')
+                .withColumnRenamed('Internal ID', 'internal_id_cd')
+                .withColumnRenamed('Source Code', 'formulary_source_cd')
+                .withColumnRenamed('GPI', 'gpi_id_cd')
+                .withColumnRenamed('Dosage Form', 'dosage_form_cd')
+                .withColumnRenamed('Route', 'route_of_admin_cd')
+                .withColumnRenamed('Strength', 'drug_strength_unit_nm')
+                .withColumnRenamed('Multi-Source Code', 'multi_source_cd')
+                .withColumnRenamed('Brand Name', 'drug_brand_nm')
+                .withColumnRenamed('Generic Name', 'generic_nm')
+                .withColumnRenamed('Product Name', 'product_nm')
+                .withColumnRenamed('FDA Type', 'proxy_fda_tp_cd')
+                .withColumnRenamed('Proxy NDC', 'proxy_ndc_cd')
+                .withColumnRenamed('Mapped NDC', 'mapped_ndc')
+                .withColumnRenamed('RxCUI', 'rxcui_cd')
+                .withColumnRenamed('Tier Level', 'tier_level_num')
+                .withColumnRenamed('Note - Formulary', 'notes_txt')
+                .withColumnRenamed('Quantity Limit (Y/N)', 'quantity_limit_tp_cnt')
+                .withColumnRenamed('Quantity Limit Amount', 'quantity_limit_amt')
+                .withColumnRenamed('Quantity Limit Days', 'quantity_limit_day_cnt')
+                .withColumnRenamed('PA Type', 'pa_tp_cd')
+                .withColumnRenamed('PA Group', 'pa_group_cd')
+                .withColumnRenamed('Specialty', 'specialty')
+                .withColumnRenamed('Therapeutic Category', 'therapeutic_category_cd')
+                .withColumnRenamed('Therapeutic Class', 'theapeutic_class_cd')
+                .withColumnRenamed('Step Therapy Type', 'step_therapy_tp_cd')
+                .withColumnRenamed('Step Therapy Group Count', 'step_therapy_group_cnt')
+                .withColumnRenamed('Step Therapy Group Desc', 'step_therapy_group_dscr')
+                .withColumnRenamed('Step Therapy Group Step', 'step_therapy_group_step_cnt')
+                .withColumn('di_audit_source_system_delete_flg', lit('0'))
+                .withColumn("load_datetime", unix_timestamp(lit(datetime_NY.strftime("%Y-%m-%d %H:%M:%S")), 'yyyy-MM-dd HH:mm:ss').cast("timestamp"))
+                .withColumn('formulary_drug_list_tp_cd', lit('EPQHP'))
+    )
+
+    src_df = (src_df.withColumn("tier_level_num", col("tier_level_num").cast(IntegerType()))
+              .withColumn("quantity_limit_tp_cnt", col("quantity_limit_tp_cnt").cast(IntegerType()))
+              .withColumn("quantity_limit_amt", col("quantity_limit_amt").cast(DecimalType(15,2)))
+              .withColumn("quantity_limit_day_cnt", col("quantity_limit_day_cnt").cast(IntegerType()))
+              .withColumn("pa_tp_cd", col("pa_tp_cd").cast(IntegerType()))
+              .withColumn("specialty", col("specialty").cast(IntegerType()))
+              .withColumn("step_therapy_group_cnt", col("step_therapy_group_cnt").cast(IntegerType()))
+              .withColumn("step_therapy_group_step_cnt", col("step_therapy_group_step_cnt").cast(IntegerType()))
+    )
+
+    src_df_cnt = src_df.count()
+    src_df.printSchema()
+    src_df.show(truncate=False)
+    logger.info(f'Source df count: {src_df_cnt}')
+    distinct_file_name = src_df.select("file_nm").distinct().rdd.flatMap(lambda x: x).collect()
+    file_names = "; ".join(distinct_file_name)
+    logger.info(f"End: read data from the s3 and trasform the data, s3_path: {s3_path}")
+
+    stage_table = 'stg_hf_cde_formulary_list_epqhp'
+    logger.info(f"Start: truncate stage table kwdm.{stage_table}")
+    execute_query(f"truncate table kwdm.{stage_table};", cdm_creds)
+    logger.info(f"End: truncate stage table kwdm.{stage_table}")
+
+    write_df_to_postgres(logger, src_df, f'kwdm.{stage_table}', cdm_creds, f'write data into kwdm.{stage_table}')
+
+    columns = "formulary_id_cd, formulary_drug_list_tp_cd, internal_id_cd, formulary_source_cd, gpi_id_cd, dosage_form_cd, route_of_admin_cd, drug_strength_unit_nm, multi_source_cd, drug_brand_name_cd, drug_brand_nm, drug_nm, generic_nm, product_nm, gpi_generic_nm, proxy_fda_tp_cd, drug_tp_cd, gap_coverage_cnt, free_first_fill_num, home_infusion_ind_num, indication_based_cd_num, select_insulins_num, non_extended_day_supply_cnt, capped_benefit_ind_num, capped_benefit_amt, capped_benefit_day_cnt, quantity_limit_dscr, notes_txt, on_selective_num, maintenance_num, member_doc_case_cd, proxy_ndc_cd, rxcui_cd, tier_level_num, drug_label_tp_cd, quantity_limit_tp_cnt, quantity_limit_amt, quantity_limit_day_cnt, pa_tp_cd, pa_group_cd, limited_access_ind, therapeutic_category_cd, theapeutic_class_cd, step_therapy_tp_cd, step_therapy_group_cnt, step_therapy_group_dscr, step_therapy_group_step_cnt, file_nm, di_audit_insert_batch_num_cd, di_audit_update_batch_num_cd, di_audit_insert_dtm, di_audit_update_dtm, di_audit_source_system_cd, di_audit_source_system_key, di_audit_source_system_delete_flg, di_audit_process_update_cd, di_audit_check_sum_hash, di_audit_cdc_process_update_dtm, di_audit_cdc_process_update_cd, di_audit_cdc_record_seq_num, di_audit_pk_hash_key, load_datetime, rx_otc, drugname_formulary_override, drugname_drug_list, drugname_drug_list_override, supplemental_drug_info, medispan_maintenance_override, medication_indicator_type, inactive_ndc, obsolete_date, specialty, indication_based, therapeutic_category_override, therapeutic_class_override, age_flag, min_age, max_age, sex_exclusion, symbol, symbol_type, mapped_ndc"
+
+    logger.info("Start: Update delete flage in target table and insert data into target table")
+    updt_insrt_hf_cde_formulary_list_qry = f'''
+    update kwdm.hf_cde_formulary_list
+    set di_audit_source_system_delete_flg = '1'
+    where  formulary_drug_list_tp_cd = 'EPQHP' and di_audit_source_system_delete_flg != '1'
+    ;
+    insert into kwdm.hf_cde_formulary_list({columns})
+    select {columns} from kwdm.{stage_table}
+    ;
+    '''
+    execute_query(updt_insrt_hf_cde_formulary_list_qry, cdm_creds)
+    logger.info("End: Update delete flage in target table and insert data into target table")
+
+    logger.info("Start: insert entry into kwdm.aws_glue_job_execution_tracker for this run")
+    # log the job run into kwdm.aws_glue_job_execution_tracker
+    log_month_check_qry = f'''
+    insert into kwdm.aws_glue_job_execution_tracker(job_name, file_names, execution_date, period_type)
+    values('{args['JOB_NAME']}', '{file_names}', current_timestamp, 'month')
+    '''
+    execute_query(log_month_check_qry,cdm_creds)
+    logger.info("End: insert entry into kwdm.aws_glue_job_execution_tracker for this run")
+
+    if args['process_from_hf_sftp'].lower() == 'yes':
+        logger.info("Start: Remove sftp file")
+        delete_from_sftp(hf_sftp_creds, args['formularies_hf_sftp_path_epqhp'], file_name)
+        logger.info("End: Remove sftp file")
+
+    # insert ending job entry into the aws glue job log table.
+    log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=f"file_names: {file_names}", source_count=src_df_cnt, insert_count=src_df_cnt, update_count=None, delete_count=None)
+
+
+if __name__ == "__main__":
+    main()
+
+
+Job 3:
+
+"""
+Job Description:
+This job reads XLSX files from the pharmacy share and writes the data into the KWDM table kwdm.hf_cde_formulary_list for chips.
+It is scheduled to run quarterly on 1st, 2nd & 3rd early hours of each quarter.
+
+Fiel and Directory Structure:
+If the job runs in January, it will process the files from the January directories. Below are examples of January 2025 files and directories:
+
+- Share drive: pharmacy
+- Chips Directory: /REPORTING/Inbound/Vendors/Caremark/Formularies/Child Health Plus/2025/January/
+- Chips file name: January CHIP Formulary.xlsx
+- xlsx sheet name: Sheet 1
+
+Execution Behavior:
+This job runs only once per quarter.
+Job execution is tracked in the kwdm.aws_glue_job_execution_tracker table.
+If an entry exists for a given month, the job will skip processing the files.
+To override this, set the flag exclude_run = false for all entries for that month.
+
+Error handling and manual execution:
+If the directory structure is not as expected, files can be copied to an SFTP location and triggered manually by passing the parameter process_from_hf_sftp = yes.
+SFTP location for production: /SFMC/PROD/Formularies/Chip
+"""
+
+import os
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.types import *
+from datetime import datetime,timedelta
+from pyspark.sql.functions import unix_timestamp, lit, input_file_name, regexp_extract, udf, col, when, concat_ws, lpad, concat
+import pytz
+import logging
+import boto3
+import psycopg2
+import re
+import json
+import socket
+from dateutil.relativedelta import relativedelta
+import pandas as pd
+import urllib.parse
+import paramiko
+import smbclient
+
+# sys.argv += ['--JOB_NAME', 'cde_si_job_chip_hf_cde_formulary_list', '--kw_s3bucket', 'hf-dev-cdp-kitewheel', '--process_from_hf_sftp', 'no', '--formularies_hf_sftp_path_chip', '/SFMC/DEV/Formularies/Chip/']
+REGION = 'us-east-1'
+NY_TZ = pytz.timezone('US/Eastern')
+
+
+def setup_logging(job_name):
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logger = logging.getLogger(job_name)
+    logger.setLevel(logging.INFO)
+    return logger
+
+
+def get_glue_connection(connection_name):
+    glue_client = boto3.client('glue', region_name=REGION)
+    response = glue_client.get_connection(Name=connection_name, HidePassword=False)
+    creds = {
+        'username': response['Connection']['ConnectionProperties']['USERNAME'],
+        'password': response['Connection']['ConnectionProperties']['PASSWORD'],
+        'url': response['Connection']['ConnectionProperties']['JDBC_CONNECTION_URL']
+    }
+    match = re.match(r'jdbc:(\w+)://([^:/]+):(\d+)/([^?]+)', creds['url'])
+    creds.update({
+        'connection_type': match.group(1),
+        'host': match.group(2),
+        'port': match.group(3),
+        'db': match.group(4)
+    })
+    return creds
+
+
+def get_secret(secret_name, region):
+    session = boto3.session.Session()
+    client = session.client(service_name='secretsmanager', region_name=region)
+    try:
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        return get_secret_value_response['SecretString']
+    except Exception as e:
+        print('Error: ', str(e))
+
+
+def execute_query(query, creds, params=None, fetch_one=False):
+    """
+    Executes a SQL query on a PostgreSQL database with optional parameters.
+    Args:
+    - query: SQL query string.
+    - creds: Dictionary containing database credentials.
+    - params: Tuple of parameters for the SQL query (optional).
+    - fetch_one: Boolean indicating whether to fetch only one record from the query results
+    Retuns:
+    - if fetch_one is True, returns a single record or None
+    - if fetch_one is False, returns the number of affected rows.
+    """
+    conn = psycopg2.connect(database=creds['db'], user=creds['username'], password=creds['password'], host=creds['host'], port=creds['port'])
+    cur = conn.cursor()
+
+    try:
+        if params:
+            cur.execute(query, params)
+        else:
+            cur.execute(query)
+
+        if fetch_one:
+            result = cur.fetchone()
+        else:
+            conn.commit()
+            result = cur.rowcount
+    finally:
+        cur.close()
+        conn.close()
+    return result
+
+
+def log_job_start(creds, logger, job_name, status):
+    logger.info("Start: Insert job start entry into aws_glue_job_log")
+    job_start_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Parameterized query to insert the start entry
+    query = """
+        INSERT INTO kwdm.aws_glue_job_log (job_name, start_time, job_status)
+        VALUES (%s, %s, %s);
+    """
+    execute_query(query, creds, (job_name, job_start_dtm, status))
+    logger.info("End: Insert job start entry into aws_glue_job_log")
+    return job_start_dtm
+
+
+def log_job_end(creds, logger, job_name, job_start_dtm, status, comments=None, source_count=None, insert_count=None, update_count=None, delete_count=None):
+    logger.info("Start: Update job end entry in aws_glue_job_log")
+    job_end_dtm = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    # Construct the SQL query with parameterized values
+    query = """
+        UPDATE kwdm.aws_glue_job_log 
+        SET source_count = %s, 
+            insert_count = %s, 
+            update_count = %s, 
+            delete_count = %s, 
+            comments = %s, 
+            end_time = %s, 
+            job_status = %s 
+        WHERE job_name = %s AND start_time = %s;
+    """
+    # Execute the query, passing None for any values that are not provided
+    execute_query(query, creds, (source_count, insert_count, update_count, delete_count, comments, job_end_dtm, status, job_name, job_start_dtm))
+    logger.info("End: Update job end entry in aws_glue_job_log")
+
+
+def write_df_to_postgres(logger, df, table_name, cdm_creds, log_message):
+    logger.info(f"Start: {log_message}")
+    (df.write.format("jdbc")
+     .option("url", cdm_creds['url'])
+     .option("driver", "org.postgresql.Driver")
+     .option("dbtable", table_name)
+     .mode("append")
+     .option("user", cdm_creds['username'])
+     .option("password", cdm_creds['password'])
+     .save()
+    )
+    logger.info(f"End: {log_message}")
+
+
+def download_from_smb(creds, share_name, folder, filename, local_path):
+    """Download file from SMB share."""
+    smbclient.ClientConfig(username=rf"HEALTHFIRST\{creds['username']}", password=creds['password'])
+    smb_path = rf"\\{creds['host']}\{share_name}{folder}\{filename}"
+    try:
+        with smbclient.open_file(smb_path, mode='rb') as smb_file:
+            with open(local_path, 'wb') as local_file:
+                local_file.write(smb_file.read())
+        print(f"File is downloaded from {smb_path} to {local_path}")
+    except Exception as e:
+        print(f"Error downloading from SMB: {e}")
+        raise
+
+
+def move_s3_files_to_archive(s3, bucket, frm_prefix, to_prefix):
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=frm_prefix)
+    if 'Contents' in response:
+        for file in response['Contents']:
+            file_key = file['Key']
+            if file_key.endswith('/'):
+                continue
+            filename = file_key.split('/')[-1]
+            file_base, file_ext = filename.rsplit('.', 1)
+            dtm = datetime.now(NY_TZ).strftime("%Y%m%d%H%M%S")
+            new_filename = f"{file_base}_{dtm}.{file_ext}"
+            arc_key = f"{to_prefix}{new_filename}"
+            s3.copy_object(Bucket=bucket, CopySource={'Bucket': bucket, 'Key': file_key}, Key=arc_key)
+            s3.delete_object(Bucket=bucket, Key=file_key)
+            print(f'Moved {file_key} to {arc_key}')
+
+
+def decode_file_name(encoded_name):
+    return urllib.parse.unquote(encoded_name)
+
+
+def process_from_hf_pharmacy_share(s3, logger, kw_s3bucket, file_name, s3_stg_prefix, cde_si_hfshare_creds):
+    logger.info("Processing from hf pharmacy share...")
+    now_eastern = datetime.now(NY_TZ)
+    # now_eastern = datetime.now(NY_TZ) - relativedelta(months=1)
+    year = now_eastern.year
+    month = now_eastern.strftime('%B')
+
+    print(f'now_eastern: {now_eastern}')
+    print(f'year: {year}')
+    print(f'month: {month}')
+
+    share_name = 'pharmacy'
+    folder_name = rf'\REPORTING\Inbound\Vendors\Caremark\Formularies\Child Health Plus\{year}\{month}'
+    print(f'folder_name: {folder_name}')
+    local_excel_path = os.path.join('/tmp', file_name)
+    local_csv_path = local_excel_path.replace('.xlsx', '.csv')
+    download_from_smb(cde_si_hfshare_creds, share_name, folder_name, file_name, local_excel_path)
+    xl_column_names = pd.read_excel(local_excel_path, engine='openpyxl', nrows=0).columns.tolist()
+    df = pd.read_excel(local_excel_path, engine='openpyxl', converters={clmn: str for clmn in xl_column_names})
+    df = df.fillna('')
+    df.to_csv(local_csv_path, index=False)
+    csv_file_name = os.path.basename(local_csv_path)
+    s3.upload_file(Filename=local_csv_path, Bucket=kw_s3bucket, Key=f'{s3_stg_prefix}{csv_file_name}')
+    logger.info(f"Uploaded {csv_file_name} to s3://{kw_s3bucket}/{s3_stg_prefix}{csv_file_name}")
+    os.remove(local_excel_path)
+    os.remove(local_csv_path)
+
+
+def get_sftp(sftp_host, sftp_user_id, sftp_user_password):
+    transport = paramiko.Transport(sftp_host, 22)
+    transport.connect(username=sftp_user_id, password=sftp_user_password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    return sftp
+
+
+def delete_from_sftp(hf_sftp_creds, sftp_path, file_name):
+    sftp = get_sftp(hf_sftp_creds['host'], hf_sftp_creds['username'], hf_sftp_creds['password'])
+    sftp.remove(os.path.join(sftp_path, file_name))
+    sftp.close()
+
+
+def process_from_hf_sftp(s3, logger, hf_sftp_creds, sftp_path, kw_s3bucket, file_name, s3_stg_prefix):
+    logger.info("Processing from hf sftp...")
+    sftp = get_sftp(hf_sftp_creds['host'], hf_sftp_creds['username'], hf_sftp_creds['password'])
+    files = sftp.listdir(sftp_path)
+    sftp_file_exist = False
+    for file in files:
+        if file == file_name:
+            logger.info(f'file_name: {file_name}')
+            sftp_file_exist = True
+            local_excel_path = os.path.join('/tmp', file_name)
+            local_csv_path = local_excel_path.replace('.xlsx', '.csv')
+            sftp.get(os.path.join(sftp_path, file_name), local_excel_path)
+            xl_column_names = pd.read_excel(local_excel_path, engine='openpyxl', nrows=0).columns.tolist()
+            df = pd.read_excel(local_excel_path, engine='openpyxl', converters={clmn: str for clmn in xl_column_names})
+            df = df.fillna('')
+            df.to_csv(local_csv_path, index=False)
+            csv_file_name = os.path.basename(local_csv_path)
+            s3.upload_file(Filename=local_csv_path, Bucket=kw_s3bucket, Key=f'{s3_stg_prefix}{csv_file_name}')
+            logger.info(f"Uploaded {csv_file_name} to s3://{kw_s3bucket}/{s3_stg_prefix}{csv_file_name}")
+            os.remove(local_excel_path)
+            os.remove(local_csv_path)
+            # sftp.remove(os.path.join(sftp_path, file_name))
+    if not sftp_file_exist:
+        logger.info(f"No hf sftp files")
+        sftp.close()
+        raise Exception('No hf sftp files exist to process')
+    sftp.close()
+
+
+def main():
+    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'kw_s3bucket', 'process_from_hf_sftp', 'formularies_hf_sftp_path_chip'])
+
+    sc = SparkContext()
+    glueContext = GlueContext(sc)
+    spark = glueContext.spark_session
+    job = Job(glueContext)
+    job.init(args['JOB_NAME'], args)
+
+    logger = setup_logging(args['JOB_NAME'])
+    cdm_creds = get_glue_connection("CJA_CONTACT_DATA_MART")
+    cde_si_hfshare_creds = json.loads(get_secret('cde-si-secret/cde_si_hfshare', REGION))
+    s3 = boto3.client('s3')
+    hf_sftp_creds = json.loads(get_secret('cde-si-secret/hf_sfmc_sftp', REGION))
+    s3_stg_prefix = 'formulary_list/formulary_list_chip_stage/'
+    s3_arc_prefix = 'formulary_list/formulary_list_chip_archive/'
+    today = datetime.now(NY_TZ)
+    # today = datetime.now(NY_TZ) - relativedelta(months=1)
+    month = today.strftime('%B')
+    logger.info(f'today: {today}')
+    logger.info(f'month: {month}')
+    file_name = f'{month} CHIP Formulary.xlsx'
+    logger.info(f'file_name: {file_name}')
+
+    # insert starting job entry into the aws glue job log table.
+    job_start_time = log_job_start(cdm_creds, logger, args['JOB_NAME'], 'started')
+
+    # verify if job was already completed for this month successfully.
+    logger.info("Start: Verify if job was already completed for this month successfully.")
+    month_check_qry = f'''
+    select 1
+    from kwdm.aws_glue_job_execution_tracker
+    where job_name = '{args['JOB_NAME']}' and period_type = 'month' and date_trunc('month', execution_date) = date_trunc('month', current_date) and exclude_run = false
+    limit 1;
+    '''
+    if execute_query(month_check_qry,cdm_creds,fetch_one=True):
+        message = 'The job was already completed for this month, and skipping this run'
+        logger.info(message)
+        # insert ending job entry into the aws glue job log table.
+        log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=message, source_count=None, insert_count=None, update_count=None, delete_count=None)
+        return
+    logger.info("End: Verify if job was already completed for this month successfully.")
+
+    # move files from stage folder to archive
+    logger.info("Start: if files exist in stage s3 archive those")
+    move_s3_files_to_archive(s3, args['kw_s3bucket'], s3_stg_prefix, s3_arc_prefix)
+    logger.info("End: if files exist in stage s3 archive those")
+
+    if args['process_from_hf_sftp'].lower() == 'yes':
+        process_from_hf_sftp(s3, logger, hf_sftp_creds, args['formularies_hf_sftp_path_chip'], args['kw_s3bucket'], file_name, s3_stg_prefix)
+    else:
+        process_from_hf_pharmacy_share(s3, logger, args['kw_s3bucket'], file_name, s3_stg_prefix, cde_si_hfshare_creds)
+
+    s3_path = f"s3://{args['kw_s3bucket']}/{s3_stg_prefix}*.csv"
+    logger.info(f"Start: read data from the s3 and trasform the data, s3_path: {s3_path}")
+    columns = pd.read_csv(s3_path, nrows=0).columns.tolist()
+    schema = StructType([StructField(clmn, StringType(), True) for clmn in columns])
+    src_df = spark.read.csv(s3_path, header=True, schema=schema)
+    src_df = src_df.withColumn('file_nm', input_file_name())
+    src_df = src_df.withColumn('file_nm', regexp_extract('file_nm', r"([^/]+$)", 0))
+    decode_file_name_udf = udf(decode_file_name, StringType())
+    src_df = src_df.withColumn('file_nm', decode_file_name_udf(src_df.file_nm))
+    # src_df.printSchema()
+    # src_df.show(truncate=False)
+    datetime_NY = datetime.now(NY_TZ)
+    src_df = (src_df.withColumnRenamed('Formulary ID', 'formulary_id_cd')
+                .withColumnRenamed('Internal ID', 'internal_id_cd')
+                .withColumnRenamed('FSC', 'formulary_source_cd')
+                .withColumnRenamed('GPI', 'gpi_id_cd')
+                .withColumnRenamed('Dosage Form', 'dosage_form_cd')
+                .withColumnRenamed('Route', 'route_of_admin_cd')
+                .withColumnRenamed('Strength', 'drug_strength_unit_nm')
+                .withColumnRenamed('Multi-Source Code', 'multi_source_cd')
+                .withColumnRenamed('Brand Name Code', 'drug_brand_name_cd')
+                .withColumnRenamed('Rx/OTC', 'rx_otc')
+                .withColumnRenamed('Label Name', 'drug_brand_nm')
+                .withColumnRenamed('Drug Name - Formulary', 'drug_nm')
+                .withColumnRenamed('Drug Name - Formulary Override', 'drugname_formulary_override')
+                .withColumnRenamed('Drug Name - Drug List', 'drugname_drug_list')
+                .withColumnRenamed('Drug Name - Drug List Override', 'drugname_drug_list_override')
+                .withColumnRenamed('Supplemental Drug Info (DL only)', 'supplemental_drug_info')
+                .withColumnRenamed('Supplemental Drug Info Type (DL only)', 'drug_tp_cd')
+                .withColumnRenamed('Generic Name', 'generic_nm')
+                .withColumnRenamed('Product Name', 'product_nm')
+                .withColumnRenamed('GPI Generic Name', 'gpi_generic_nm')
+                .withColumnRenamed('Proxy FDA Type', 'proxy_fda_tp_cd')
+                .withColumnRenamed('Quantity Limit Description', 'quantity_limit_dscr')
+                .withColumn('notes_txt', concat_ws(';', concat(lit('Note - Formulary: '), col('Note - Formulary')), concat(lit('Note - Drug List: '), col('Note - Drug List'))))
+                .withColumnRenamed('On Selective', 'on_selective_num')
+                .withColumnRenamed('Maintenance', 'maintenance_num')
+                .withColumnRenamed('Medispan Maintenance Override', 'medispan_maintenance_override')
+                .withColumnRenamed('Member Doc Case Override', 'member_doc_case_cd')
+                .withColumnRenamed('Medication Indicator Type', 'medication_indicator_type')
+                .withColumnRenamed('Inactive NDC', 'inactive_ndc')
+                .withColumnRenamed('Obsolete Date', 'obsolete_date')
+                .withColumnRenamed('Proxy NDC', 'proxy_ndc_cd')
+                .withColumnRenamed('RxCUI', 'rxcui_cd')
+                .withColumnRenamed('Tier Level', 'tier_level_num')
+                .withColumnRenamed('Quantity Limit Type', 'quantity_limit_tp_cnt')
+                .withColumnRenamed('Quantity Limit Amount', 'quantity_limit_amt')
+                .withColumnRenamed('Quantity Limit Days', 'quantity_limit_day_cnt')
+                .withColumnRenamed('PA Type', 'pa_tp_cd')
+                .withColumnRenamed('PA Group', 'pa_group_cd')
+                .withColumnRenamed('Specialty', 'specialty')
+                .withColumnRenamed('Indication Based', 'indication_based')
+                .withColumnRenamed('Therapeutic Category', 'therapeutic_category_cd')
+                .withColumnRenamed('Therapeutic Category Override', 'therapeutic_category_override')
+                .withColumnRenamed('Therapeutic Class', 'theapeutic_class_cd')
+                .withColumnRenamed('Therapeutic Class Override', 'therapeutic_class_override')
+                .withColumnRenamed('Age Flag', 'age_flag')
+                .withColumnRenamed('Min Age', 'min_age')
+                .withColumnRenamed('Max Age', 'max_age')
+                .withColumnRenamed('Sex Exclusion', 'sex_exclusion')
+                .withColumnRenamed('Symbol (DL only)', 'symbol')
+                .withColumnRenamed('Symbol Type (DL only)', 'symbol_type')
+                .withColumnRenamed('Step Therapy Type', 'step_therapy_tp_cd')
+                .withColumnRenamed('Step Therapy Group Count', 'step_therapy_group_cnt')
+                .withColumnRenamed('Step Therapy Group Desc', 'step_therapy_group_dscr')
+                .withColumnRenamed('Step Therapy Group Step', 'step_therapy_group_step_cnt')
+                .withColumn('di_audit_source_system_delete_flg', lit('0'))
+                .withColumn("load_datetime", unix_timestamp(lit(datetime_NY.strftime("%Y-%m-%d %H:%M:%S")), 'yyyy-MM-dd HH:mm:ss').cast("timestamp"))
+                .withColumn('formulary_drug_list_tp_cd', lit('CHP'))
+                .drop('Note - Formulary')
+                .drop('Note - Drug List')
+    )
+
+    src_df = (src_df.withColumn("on_selective_num", col("on_selective_num").cast(IntegerType()))
+              .withColumn("maintenance_num", col("maintenance_num").cast(IntegerType()))
+              .withColumn("tier_level_num", col("tier_level_num").cast(IntegerType()))
+              .withColumn("quantity_limit_tp_cnt", col("quantity_limit_tp_cnt").cast(IntegerType()))
+              .withColumn("quantity_limit_amt", col("quantity_limit_amt").cast(DecimalType(15, 2)))
+              .withColumn("quantity_limit_day_cnt", col("quantity_limit_day_cnt").cast(IntegerType()))
+              .withColumn("pa_tp_cd", col("pa_tp_cd").cast(IntegerType()))
+              .withColumn("step_therapy_group_cnt", col("step_therapy_group_cnt").cast(IntegerType()))
+              .withColumn("step_therapy_group_step_cnt", col("step_therapy_group_step_cnt").cast(IntegerType()))
+              .withColumn("specialty", col("specialty").cast(IntegerType()))
+    )
+
+    src_df_cnt = src_df.count()
+    src_df.printSchema()
+    src_df.show(truncate=False)
+    logger.info(f'Source df count: {src_df_cnt}')
+    distinct_file_name = src_df.select("file_nm").distinct().rdd.flatMap(lambda x: x).collect()
+    file_names = "; ".join(distinct_file_name)
+    print(f'src_df_cnt: {src_df_cnt}')
+    logger.info(f"End: read data from the s3 and trasform the data, s3_path: {s3_path}")
+
+    stage_table = 'stg_hf_cde_formulary_list_chip'
+    logger.info(f"Start: truncate stage table kwdm.{stage_table}")
+    execute_query(f"truncate table kwdm.{stage_table};", cdm_creds)
+    logger.info(f"End: truncate stage table kwdm.{stage_table}")
+
+    write_df_to_postgres(logger, src_df, f'kwdm.{stage_table}', cdm_creds, f'write data into kwdm.{stage_table}')
+
+    columns = "formulary_id_cd, formulary_drug_list_tp_cd, internal_id_cd, formulary_source_cd, gpi_id_cd, dosage_form_cd, route_of_admin_cd, drug_strength_unit_nm, multi_source_cd, drug_brand_name_cd, drug_brand_nm, drug_nm, generic_nm, product_nm, gpi_generic_nm, proxy_fda_tp_cd, drug_tp_cd, gap_coverage_cnt, free_first_fill_num, home_infusion_ind_num, indication_based_cd_num, select_insulins_num, non_extended_day_supply_cnt, capped_benefit_ind_num, capped_benefit_amt, capped_benefit_day_cnt, quantity_limit_dscr, notes_txt, on_selective_num, maintenance_num, member_doc_case_cd, proxy_ndc_cd, rxcui_cd, tier_level_num, drug_label_tp_cd, quantity_limit_tp_cnt, quantity_limit_amt, quantity_limit_day_cnt, pa_tp_cd, pa_group_cd, limited_access_ind, therapeutic_category_cd, theapeutic_class_cd, step_therapy_tp_cd, step_therapy_group_cnt, step_therapy_group_dscr, step_therapy_group_step_cnt, file_nm, di_audit_insert_batch_num_cd, di_audit_update_batch_num_cd, di_audit_insert_dtm, di_audit_update_dtm, di_audit_source_system_cd, di_audit_source_system_key, di_audit_source_system_delete_flg, di_audit_process_update_cd, di_audit_check_sum_hash, di_audit_cdc_process_update_dtm, di_audit_cdc_process_update_cd, di_audit_cdc_record_seq_num, di_audit_pk_hash_key, load_datetime, rx_otc, drugname_formulary_override, drugname_drug_list, drugname_drug_list_override, supplemental_drug_info, medispan_maintenance_override, medication_indicator_type, inactive_ndc, obsolete_date, specialty, indication_based, therapeutic_category_override, therapeutic_class_override, age_flag, min_age, max_age, sex_exclusion, symbol, symbol_type"
+
+    logger.info("Start: Update delete flage in target table and insert data into target table")
+    updt_insrt_hf_cde_formulary_list_qry = f'''
+    update kwdm.hf_cde_formulary_list
+    set di_audit_source_system_delete_flg = '1'
+    where  formulary_drug_list_tp_cd = 'CHP' and di_audit_source_system_delete_flg != '1'
+    ;
+    insert into kwdm.hf_cde_formulary_list({columns})
+    select {columns} from kwdm.{stage_table}
+    ;
+    '''
+    execute_query(updt_insrt_hf_cde_formulary_list_qry, cdm_creds)
+    logger.info("End: Update delete flage in target table and insert data into target table")
+
+    logger.info("Start: insert entry into kwdm.aws_glue_job_execution_tracker for this run")
+    # log the job run into kwdm.aws_glue_job_execution_tracker
+    log_month_check_qry = f'''
+    insert into kwdm.aws_glue_job_execution_tracker(job_name, file_names, execution_date, period_type)
+    values('{args['JOB_NAME']}', '{file_names}', current_timestamp, 'month')
+    '''
+    execute_query(log_month_check_qry,cdm_creds)
+    logger.info("End: insert entry into kwdm.aws_glue_job_execution_tracker for this run")
+
+    if args['process_from_hf_sftp'].lower() == 'yes':
+        logger.info("Start: Remove sftp file")
+        delete_from_sftp(hf_sftp_creds, args['formularies_hf_sftp_path_chip'], file_name)
+        logger.info("End: Remove sftp file")
+
+    # insert ending job entry into the aws glue job log table.
+    log_job_end(cdm_creds, logger, args['JOB_NAME'], job_start_time, 'completed', comments=f"file_names: {file_names}", source_count=src_df_cnt, insert_count=src_df_cnt, update_count=None, delete_count=None)
+
+
+if __name__ == "__main__":
+    main()
