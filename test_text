@@ -1,3 +1,44 @@
+import smbclient
+import logging
+
+def transfer_file_smb(creds, share_name, remote_file_path, local_path, operation='download'):
+    """
+    Transfer a file between SMB share and local system.
+    
+    :param creds: Credentials for accessing SMB share (contains 'username', 'password', 'host').
+    :param share_name: The name of the shared folder on the SMB server.
+    :param remote_file_path: Path of the file on the SMB share (including folder and filename).
+    :param local_path: Path to save the file locally (for download) or path of file to upload (for upload).
+    :param operation: The operation to perform - 'download' (default) or 'upload'.
+    :raises: Exception if the transfer fails.
+    """
+    smbclient.ClientConfig(username=rf"HEALTHFIRST\{creds['username']}", password=creds['password'])
+
+    smb_path = rf"\\{creds['host']}\{share_name}\{remote_file_path}"
+
+    try:
+        if operation == 'download':
+            with smbclient.open_file(smb_path, mode='rb') as smb_file:
+                with open(local_path, 'wb') as local_file:
+                    local_file.write(smb_file.read())
+            logging.info(f"File successfully downloaded from {smb_path} to {local_path}")
+        
+        elif operation == 'upload':
+            with open(local_path, 'rb') as local_file:
+                with smbclient.open_file(smb_path, mode='wb') as smb_file:
+                    smb_file.write(local_file.read())
+            logging.info(f"File successfully uploaded from {local_path} to {smb_path}")
+        
+        else:
+            raise ValueError("Invalid operation. Only 'download' or 'upload' are allowed.")
+    
+    except Exception as e:
+        logging.error(f"Error during SMB transfer (operation: {operation}): {str(e)}")
+        raise  # Re-raise the exception after logging it
+
+
+
+
 def has_job_run_for_period(logger, job_name, period_type, cdm_creds, execution_date=None):
     """
     Check if the specified job has already run in a given period (week, month, quarter, year, etc.)
